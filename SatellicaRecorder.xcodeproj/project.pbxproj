@@ -1,0 +1,534 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 46;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2750C8E4AE813721CD8C5715 /* RecorderConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C431F7533C5EB1E8FAFA5B5 /* RecorderConstants.swift */; };
+		2E135FDA9F6BA14DB94CE5AE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A3EFE867282635D7BC778CF7 /* Foundation.framework */; };
+		345C7C4593C872AB32C306CF /* RecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E9AC1D2F444FA3E3F1DAEB5 /* RecorderApp.swift */; };
+		3BA0DCFE10D84F5FA787F41B /* ChunkUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A365A49E9264B58E801B3D7 /* ChunkUploader.swift */; };
+		430CD1F555100F9C991EDA73 /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9580A38CB0F46F75A67264D9 /* SessionManager.swift */; };
+		439F62CA337E11F8DA3B1EA1 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A3EFE867282635D7BC778CF7 /* Foundation.framework */; };
+		530210125395CCBC0568BBCD /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BFEC85CE65B93C136423280 /* HomeView.swift */; };
+		83AD84E30D96201DC7688FA9 /* BroadcastTrigger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00FAEF05A5B55F11BF156799 /* BroadcastTrigger.swift */; };
+		A3033A56B1C985CFDA49279A /* StopView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7FD3367C769604A2C4697F6 /* StopView.swift */; };
+		A5409A214BB7F9073F92F98F /* StartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E1E839D84FF4B790DE1CFA /* StartView.swift */; };
+		AFFE5C80C92FA6029DCB42E0 /* BroadcastExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FBCFADE373803B49DB1B4F6B /* BroadcastExtension.appex */; };
+		B76E17DE89A929DFEE225DFE /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE278DD69065A3D07B043767 /* SampleHandler.swift */; };
+		F95DE3AB3398547F73E67523 /* RecorderConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C431F7533C5EB1E8FAFA5B5 /* RecorderConstants.swift */; };
+		FB1740E04A2EFD0EC77F0525 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1BD3E1E567355A46EAD5B0 /* Theme.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		14FAD0F06ED06B1849B7450D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 56A61157C30B1A1E15A25CE5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AECDB8014ED99D9D28B54A6A;
+			remoteInfo = BroadcastExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A99417DF2670FD4931B2CD7D /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AFFE5C80C92FA6029DCB42E0 /* BroadcastExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		00FAEF05A5B55F11BF156799 /* BroadcastTrigger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BroadcastTrigger.swift; path = Services/BroadcastTrigger.swift; sourceTree = "<group>"; };
+		2BFEC85CE65B93C136423280 /* HomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HomeView.swift; path = Views/HomeView.swift; sourceTree = "<group>"; };
+		2E1BD3E1E567355A46EAD5B0 /* Theme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		2E9AC1D2F444FA3E3F1DAEB5 /* RecorderApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecorderApp.swift; sourceTree = "<group>"; };
+		30E1E839D84FF4B790DE1CFA /* StartView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StartView.swift; path = Views/StartView.swift; sourceTree = "<group>"; };
+		3A365A49E9264B58E801B3D7 /* ChunkUploader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChunkUploader.swift; path = Services/ChunkUploader.swift; sourceTree = "<group>"; };
+		9580A38CB0F46F75A67264D9 /* SessionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionManager.swift; path = Services/SessionManager.swift; sourceTree = "<group>"; };
+		9C431F7533C5EB1E8FAFA5B5 /* RecorderConstants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecorderConstants.swift; sourceTree = "<group>"; };
+		A3EFE867282635D7BC778CF7 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		B7FD3367C769604A2C4697F6 /* StopView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StopView.swift; path = Views/StopView.swift; sourceTree = "<group>"; };
+		D591C9BACBC1E9FB3A3B9B09 /* SatellicaRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SatellicaRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FBCFADE373803B49DB1B4F6B /* BroadcastExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BroadcastExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE278DD69065A3D07B043767 /* SampleHandler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		29F0955510EFFE1E47DCD7CC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2E135FDA9F6BA14DB94CE5AE /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		59472F835B4FBC8D5F1830D1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				439F62CA337E11F8DA3B1EA1 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		4C3D3EB81DCD6D0DC07BE107 /* BroadcastExtension */ = {
+			isa = PBXGroup;
+			children = (
+				FE278DD69065A3D07B043767 /* SampleHandler.swift */,
+			);
+			name = BroadcastExtension;
+			path = BroadcastExtension;
+			sourceTree = "<group>";
+		};
+		6661B8094386EF5BDE9D2E26 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				DFE1F1ACDA7B5E71A1C286E1 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		8159D56038B6695569221486 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				9C431F7533C5EB1E8FAFA5B5 /* RecorderConstants.swift */,
+			);
+			name = Shared;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		8FBFA2731BE0F69C5B69AF61 = {
+			isa = PBXGroup;
+			children = (
+				BF687D01C98FD615D91C8CB4 /* Products */,
+				6661B8094386EF5BDE9D2E26 /* Frameworks */,
+				8159D56038B6695569221486 /* Shared */,
+				ED644D3B3106F7137E3E2E40 /* App */,
+				4C3D3EB81DCD6D0DC07BE107 /* BroadcastExtension */,
+			);
+			sourceTree = "<group>";
+		};
+		BF687D01C98FD615D91C8CB4 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D591C9BACBC1E9FB3A3B9B09 /* SatellicaRecorder.app */,
+				FBCFADE373803B49DB1B4F6B /* BroadcastExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DFE1F1ACDA7B5E71A1C286E1 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				A3EFE867282635D7BC778CF7 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		ED644D3B3106F7137E3E2E40 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				2E9AC1D2F444FA3E3F1DAEB5 /* RecorderApp.swift */,
+				00FAEF05A5B55F11BF156799 /* BroadcastTrigger.swift */,
+				3A365A49E9264B58E801B3D7 /* ChunkUploader.swift */,
+				9580A38CB0F46F75A67264D9 /* SessionManager.swift */,
+				2E1BD3E1E567355A46EAD5B0 /* Theme.swift */,
+				2BFEC85CE65B93C136423280 /* HomeView.swift */,
+				30E1E839D84FF4B790DE1CFA /* StartView.swift */,
+				B7FD3367C769604A2C4697F6 /* StopView.swift */,
+			);
+			name = App;
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		13F8F123DC53A64F0C6ACA5E /* SatellicaRecorder */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F73B5FD38DB1AD7550100ED1 /* Build configuration list for PBXNativeTarget "SatellicaRecorder" */;
+			buildPhases = (
+				EA45FC65F5545FBE5CB2A2FF /* Sources */,
+				59472F835B4FBC8D5F1830D1 /* Frameworks */,
+				050B1717D506FA400A958FDF /* Resources */,
+				A99417DF2670FD4931B2CD7D /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				81BF4655916E9E07CBAAA43D /* PBXTargetDependency */,
+			);
+			name = SatellicaRecorder;
+			productName = SatellicaRecorder;
+			productReference = D591C9BACBC1E9FB3A3B9B09 /* SatellicaRecorder.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AECDB8014ED99D9D28B54A6A /* BroadcastExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A5B5A0404CE39ED4BFD68645 /* Build configuration list for PBXNativeTarget "BroadcastExtension" */;
+			buildPhases = (
+				D227C8B3EB98BF50016A80B7 /* Sources */,
+				29F0955510EFFE1E47DCD7CC /* Frameworks */,
+				5C393822E77544682FA68889 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BroadcastExtension;
+			productName = BroadcastExtension;
+			productReference = FBCFADE373803B49DB1B4F6B /* BroadcastExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		56A61157C30B1A1E15A25CE5 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 32190E6AF54D8A97A6582795 /* Build configuration list for PBXProject "SatellicaRecorder" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 8FBFA2731BE0F69C5B69AF61;
+			minimizedProjectReferenceProxies = 0;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = BF687D01C98FD615D91C8CB4 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				13F8F123DC53A64F0C6ACA5E /* SatellicaRecorder */,
+				AECDB8014ED99D9D28B54A6A /* BroadcastExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		050B1717D506FA400A958FDF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5C393822E77544682FA68889 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		D227C8B3EB98BF50016A80B7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F95DE3AB3398547F73E67523 /* RecorderConstants.swift in Sources */,
+				B76E17DE89A929DFEE225DFE /* SampleHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EA45FC65F5545FBE5CB2A2FF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2750C8E4AE813721CD8C5715 /* RecorderConstants.swift in Sources */,
+				345C7C4593C872AB32C306CF /* RecorderApp.swift in Sources */,
+				83AD84E30D96201DC7688FA9 /* BroadcastTrigger.swift in Sources */,
+				3BA0DCFE10D84F5FA787F41B /* ChunkUploader.swift in Sources */,
+				430CD1F555100F9C991EDA73 /* SessionManager.swift in Sources */,
+				FB1740E04A2EFD0EC77F0525 /* Theme.swift in Sources */,
+				530210125395CCBC0568BBCD /* HomeView.swift in Sources */,
+				A5409A214BB7F9073F92F98F /* StartView.swift in Sources */,
+				A3033A56B1C985CFDA49279A /* StopView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		81BF4655916E9E07CBAAA43D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = BroadcastExtension;
+			target = AECDB8014ED99D9D28B54A6A /* BroadcastExtension */;
+			targetProxy = 14FAD0F06ED06B1849B7450D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		33D3F000F5A811B3F1359509 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = BroadcastExtension/BroadcastExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 44D3SM5LR3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = BroadcastExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Satellica Broadcast";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.musiciansfriend.mobile.app.broadcast;
+				PRODUCT_NAME = BroadcastExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		3A14E7B3C4249D1F193647B2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5698E8260FA9861ABECDE899 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = App/SatellicaRecorder.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 44D3SM5LR3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Satellica Recorder";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Satellica Recorder uses the microphone to capture your voice during screen recording sessions.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.musiciansfriend.mobile.app;
+				PRODUCT_NAME = SatellicaRecorder;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		6960951A8AD378DEBEECB56C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = App/SatellicaRecorder.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 44D3SM5LR3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Satellica Recorder";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Satellica Recorder uses the microphone to capture your voice during screen recording sessions.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.musiciansfriend.mobile.app;
+				PRODUCT_NAME = SatellicaRecorder;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		779C1F3113A5C636CF63EB03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = BroadcastExtension/BroadcastExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 44D3SM5LR3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = BroadcastExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Satellica Broadcast";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.musiciansfriend.mobile.app.broadcast;
+				PRODUCT_NAME = BroadcastExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		F178B6DBF87227728164AA66 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		32190E6AF54D8A97A6582795 /* Build configuration list for PBXProject "SatellicaRecorder" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3A14E7B3C4249D1F193647B2 /* Debug */,
+				F178B6DBF87227728164AA66 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A5B5A0404CE39ED4BFD68645 /* Build configuration list for PBXNativeTarget "BroadcastExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				33D3F000F5A811B3F1359509 /* Release */,
+				779C1F3113A5C636CF63EB03 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F73B5FD38DB1AD7550100ED1 /* Build configuration list for PBXNativeTarget "SatellicaRecorder" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5698E8260FA9861ABECDE899 /* Release */,
+				6960951A8AD378DEBEECB56C /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 56A61157C30B1A1E15A25CE5 /* Project object */;
+}
