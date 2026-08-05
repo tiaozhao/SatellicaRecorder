@@ -193,7 +193,9 @@ final class ChunkUploader: NSObject, ObservableObject {
         }
         guard var manifest = RecordingManifest.load(),
               let context = NativeUploadContextStore.load(),
-              context.recordingId == manifest.sessionId else {
+              context.recordingId == manifest.sessionId,
+              context.uploadAuthorized == true,
+              UploadQueueStore.all().contains(context.recordingId) else {
             SessionDiagnostics.shared.record("upload_context_or_manifest_missing")
             return
         }
@@ -224,15 +226,8 @@ final class ChunkUploader: NSObject, ObservableObject {
         if manifest.status == "stopped" {
             scheduleUploadWatchdog()
         }
-        let uploadOnlyCompletion = manifest.status == "stopped" && !siteReportedCompleted(context)
-        if uploadOnlyCompletion {
-            if prepareUploadOnlyChunks(manifest: &manifest, context: context) {
-                refreshCounts(manifest)
-            }
-        } else {
-            if beginMetadataRepairIfNeeded(manifest: manifest, context: context) {
-                return
-            }
+        if beginMetadataRepairIfNeeded(manifest: manifest, context: context) {
+            return
         }
         if deferForMissingLocalChunk(in: manifest) {
             return
@@ -291,6 +286,32 @@ final class ChunkUploader: NSObject, ObservableObject {
             activity = .idle
         }
         attemptCompleteIfReady(manifest: manifest, context: context)
+    }
+
+    /// Cancels tasks left by older app versions that uploaded continuously.
+    /// A background URLSession can otherwise continue PUTs without the current
+    /// process ever calling `uploadPendingChunks()`.
+    func cancelUnauthorizedBackgroundTasks() {
+        backgroundSession.getAllTasks { tasks in
+            for task in tasks {
+                guard let identity = UploadTaskIdentity(taskDescription: task.taskDescription) else {
+                    task.cancel()
+                    continue
+                }
+                let authorized = NativeUploadContextStore.load(recordingId: identity.recordingId)?
+                    .uploadAuthorized == true && UploadQueueStore.all().contains(identity.recordingId)
+                if !authorized { task.cancel() }
+            }
+        }
+    }
+
+    func cancelBackgroundTasks(recordingId: String) {
+        backgroundSession.getAllTasks { tasks in
+            for task in tasks where
+                UploadTaskIdentity(taskDescription: task.taskDescription)?.recordingId == recordingId {
+                task.cancel()
+            }
+        }
     }
 
     func reset() {
@@ -530,6 +551,8 @@ final class ChunkUploader: NSObject, ObservableObject {
     ) {
         guard let identity = UploadTaskIdentity(taskDescription: taskDescription) else { return }
         inFlightChunks.remove(identity)
+        guard NativeUploadContextStore.load(recordingId: identity.recordingId)?.uploadAuthorized == true,
+              UploadQueueStore.all().contains(identity.recordingId) else { return }
         guard var manifest = RecordingManifest.load(), manifest.sessionId == identity.recordingId,
               manifest.chunks.contains(where: { $0.index == identity.chunkIndex }) else { return }
 
@@ -671,10 +694,10 @@ final class ChunkUploader: NSObject, ObservableObject {
 
     private func attemptCompleteIfReady(manifest: RecordingManifest, context: NativeUploadContext) {
         guard !isCompleting, !didComplete, !terminalFailure, manifest.status == "stopped" else { return }
+        guard context.uploadAuthorized == true else { return }
         guard manifest.chunks.allSatisfy({ $0.status == .uploaded }) else { return }
-
-        if !siteReportedCompleted(context) {
-            finalizeUploadOnlyRecording()
+        guard !manifest.chunks.isEmpty else {
+            failTerminal("recording_has_no_valid_chunks")
             return
         }
 
@@ -831,18 +854,6 @@ final class ChunkUploader: NSObject, ObservableObject {
         finalizeRecordingLocally(logEvent: "recording_server_accepted")
     }
 
-    /// An interview explicitly ended early (`completed: false`). All produced
-    /// files still have to receive PUT 200, but the site does not want a
-    /// manifest verification/merge request for this recording.
-    private func finalizeUploadOnlyRecording() {
-        RecorderLog.write("uploader", "complete_skipped_site_incomplete", [
-            "recordingId": NativeUploadContextStore.load()?.recordingId ?? "unknown",
-            "uploadedChunks": chunksUploaded,
-            "totalChunks": chunksTotal
-        ])
-        finalizeRecordingLocally(logEvent: "recording_upload_only_completed")
-    }
-
     private func finalizeRecordingLocally(logEvent: String) {
         guard var manifest = RecordingManifest.load() else { return }
         manifest.status = "completed"
@@ -908,7 +919,8 @@ final class ChunkUploader: NSObject, ObservableObject {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            var failedIndexes: [Int] = []
+            var invalidMediaIndexes: [Int] = []
+            var metadataFailureIndexes: [Int] = []
             for original in candidates.sorted(by: { $0.index < $1.index }) {
                 let fileURL = RecorderConstants.chunksDirectory.appendingPathComponent(original.fileName)
                 let journal = ChunkMetadataStore.load(
@@ -916,10 +928,13 @@ final class ChunkUploader: NSObject, ObservableObject {
                     index: original.index
                 )
                 guard let inspection = await Self.inspectLocalChunk(at: fileURL),
-                      let startOffsetMs = original.startOffsetMs ?? journal?.startOffsetMs,
-                      startOffsetMs >= 0,
                       inspection.fileSize <= context.maxChunkBytes else {
-                    failedIndexes.append(original.index)
+                    invalidMediaIndexes.append(original.index)
+                    continue
+                }
+                guard let startOffsetMs = original.startOffsetMs ?? journal?.startOffsetMs,
+                      startOffsetMs >= 0 else {
+                    metadataFailureIndexes.append(original.index)
                     continue
                 }
                 guard generation == self.lifecycleGeneration else { return }
@@ -955,7 +970,7 @@ final class ChunkUploader: NSObject, ObservableObject {
                     verified?.fileSize == repaired.fileSize &&
                     verified?.sha256 == repaired.sha256
                 guard journalSaved && manifestSaved && verifiedOK else {
-                    failedIndexes.append(original.index)
+                    metadataFailureIndexes.append(original.index)
                     continue
                 }
 
@@ -970,11 +985,47 @@ final class ChunkUploader: NSObject, ObservableObject {
 
             guard generation == self.lifecycleGeneration else { return }
             self.isRepairingMetadata = false
-            if failedIndexes.isEmpty {
+            if invalidMediaIndexes.isEmpty && metadataFailureIndexes.isEmpty {
                 self.activity = .uploading
                 self.uploadPendingChunks()
+                return
+            }
+
+            // AVFoundation inspection can fail transiently immediately after
+            // ReplayKit closes a file. Require three failed inspections before
+            // classifying media as corrupt and deleting only a trailing run.
+            let confirmedInvalidMedia = invalidMediaIndexes.filter {
+                (self.metadataRetryAttempts[$0] ?? 0) >= 2
+            }
+            let mediaPendingRetry = invalidMediaIndexes.filter {
+                !confirmedInvalidMedia.contains($0)
+            }
+            let invalidMiddleIndexes = self.discardInvalidTrailingChunks(
+                confirmedInvalidIndexes: confirmedInvalidMedia,
+                recordingId: manifest.sessionId
+            )
+            if !invalidMiddleIndexes.isEmpty {
+                self.failTerminal("middle_chunk_invalid_\(invalidMiddleIndexes.sorted().first ?? -1)")
+                return
+            }
+            if metadataFailureIndexes.contains(where: {
+                (self.metadataRetryAttempts[$0] ?? 0) >= 2
+            }) {
+                self.failTerminal(
+                    "chunk_metadata_persist_failed_\(metadataFailureIndexes.sorted().first ?? -1)"
+                )
+                return
+            }
+            guard RecordingManifestStore.load(recordingId: manifest.sessionId)?.chunks.isEmpty != true else {
+                self.failTerminal("recording_has_no_valid_chunks")
+                return
+            }
+
+            let retryIndexes = Array(Set(mediaPendingRetry + metadataFailureIndexes)).sorted()
+            if retryIndexes.isEmpty {
+                self.uploadPendingChunks()
             } else {
-                self.scheduleMetadataRetry(indexes: failedIndexes)
+                self.scheduleMetadataRetry(indexes: retryIndexes)
             }
         }
         return true
@@ -1010,51 +1061,33 @@ final class ChunkUploader: NSObject, ObservableObject {
         return changed
     }
 
-    /// For `completed: false`, media timing and hashes are not consumed by a
-    /// `/complete` manifest. Recover only the state needed to PUT every local
-    /// file; normal completed interviews keep the stronger media validation.
-    @discardableResult
-    private func prepareUploadOnlyChunks(
-        manifest: inout RecordingManifest,
-        context: NativeUploadContext
-    ) -> Bool {
-        var changed = false
-        for chunk in manifest.chunks where chunk.status == .recording || chunk.status == .dataLost {
-            let fileURL = RecorderConstants.chunksDirectory.appendingPathComponent(chunk.fileName)
-            let bytes = fileSize(at: fileURL)
-            guard bytes > 0, bytes <= context.maxChunkBytes else { continue }
-            let saved = RecordingManifestStore.updateChunk(
-                sessionId: manifest.sessionId,
-                index: chunk.index
-            ) { stored in
-                stored.status = .ready
-                stored.fileSize = bytes
-            }
-            changed = changed || saved
+    private func discardInvalidTrailingChunks(
+        confirmedInvalidIndexes: [Int],
+        recordingId: String
+    ) -> [Int] {
+        guard var manifest = RecordingManifestStore.load(recordingId: recordingId),
+              manifest.status == "stopped" else { return confirmedInvalidIndexes }
+        var failed = Set(confirmedInvalidIndexes)
+        var discarded: [Int] = []
+        while let tail = manifest.chunks.max(by: { $0.index < $1.index }), failed.contains(tail.index) {
+            try? FileManager.default.removeItem(
+                at: RecorderConstants.chunksDirectory(for: recordingId).appendingPathComponent(tail.fileName)
+            )
+            ChunkMetadataStore.remove(sessionId: recordingId, index: tail.index)
+            guard RecordingManifestStore.removeChunk(sessionId: recordingId, index: tail.index) else { break }
+            discarded.append(tail.index)
+            failed.remove(tail.index)
+            manifest.chunks.removeAll { $0.index == tail.index }
         }
-        if changed, let latest = RecordingManifest.load(), latest.sessionId == manifest.sessionId {
-            manifest = latest
-            RecorderLog.write("uploader", "upload_only_state_recovered", [
-                "recordingId": manifest.sessionId
+        if !discarded.isEmpty {
+            _ = RecordingManifestStore.markPartialDataLoss(sessionId: recordingId)
+            RecorderLog.write("uploader", "trailing_invalid_chunks_discarded", [
+                "recordingId": recordingId,
+                "indexes": discarded.sorted().map(String.init).joined(separator: ","),
+                "partialDataLoss": true
             ])
         }
-        return changed
-    }
-
-    private func siteReportedCompleted(_ context: NativeUploadContext) -> Bool {
-        let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
-        if defaults?.string(forKey: RecorderConstants.siteStopRecordingIdKey) == context.recordingId,
-           defaults?.object(forKey: RecorderConstants.siteStopCompletedKey) != nil {
-            // This is written synchronously with the stop request and is the
-            // newest source if duplicate stop messages carry different values.
-            return defaults?.bool(forKey: RecorderConstants.siteStopCompletedKey) ?? true
-        }
-        if let siteCompleted = context.siteCompleted {
-            return siteCompleted
-        }
-        // Backward compatibility for recordings stopped before the new field
-        // existed: preserve the previous `/complete` behavior.
-        return true
+        return failed.sorted()
     }
 
     private nonisolated static func inspectLocalChunk(at fileURL: URL) async -> LocalChunkInspection? {

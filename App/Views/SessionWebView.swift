@@ -4,6 +4,59 @@
 import SwiftUI
 import WebKit
 
+/// Central allow-list for every privileged WebView capability. The bridge,
+/// media capture, and in-WebView navigation must all agree on the same origin.
+enum WebSecurityPolicy {
+    static func isTrusted(_ url: URL?) -> Bool {
+        guard let url,
+              let scheme = normalized(url.scheme),
+              let host = normalizedHost(url.host),
+              let trustedScheme = normalized(RecorderConstants.siteBaseURL.scheme),
+              let trustedHost = normalizedHost(RecorderConstants.siteBaseURL.host) else {
+            return false
+        }
+
+        return scheme == trustedScheme &&
+            host == trustedHost &&
+            normalizedPort(url.port, scheme: scheme) == normalizedPort(
+                RecorderConstants.siteBaseURL.port,
+                scheme: trustedScheme
+            )
+    }
+
+    static func isTrusted(_ origin: WKSecurityOrigin) -> Bool {
+        guard let scheme = normalized(origin.protocol),
+              let host = normalizedHost(origin.host),
+              let trustedScheme = normalized(RecorderConstants.siteBaseURL.scheme),
+              let trustedHost = normalizedHost(RecorderConstants.siteBaseURL.host) else {
+            return false
+        }
+
+        return scheme == trustedScheme &&
+            host == trustedHost &&
+            normalizedPort(origin.port, scheme: scheme) == normalizedPort(
+                RecorderConstants.siteBaseURL.port,
+                scheme: trustedScheme
+            )
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value.lowercased()
+    }
+
+    private static func normalizedHost(_ value: String?) -> String? {
+        guard var value = normalized(value) else { return nil }
+        while value.hasSuffix(".") { value.removeLast() }
+        return value.isEmpty ? nil : value
+    }
+
+    private static func normalizedPort(_ port: Int?, scheme: String) -> Int {
+        if let port, port > 0 { return port }
+        return scheme == "https" ? 443 : (scheme == "http" ? 80 : -1)
+    }
+}
+
 /// Diagnostics only need the navigation destination, never query credentials.
 private func diagnosticURL(_ url: URL?) -> String {
     guard let url else { return "nil" }
@@ -26,7 +79,7 @@ struct SessionWebViewPage: View {
             // Never allow navigation to detach the live call while recording.
             if !session.isRecording {
                 Button {
-                    session.path = []
+                    session.returnHomeFromWebSession()
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 16, weight: .semibold))
@@ -109,8 +162,15 @@ final class PersistentWebViewStore: ObservableObject {
         guard let webView else { return }
         coordinator?.session = session
         webView.scrollView.refreshControl?.isEnabled = !session.isRecording
+        webView.allowsBackForwardNavigationGestures = !session.isRecording
 
         let desiredURL = session.webViewURL ?? URL(string: "\(RecorderConstants.siteURL)/session/room")!
+        guard WebSecurityPolicy.isTrusted(desiredURL) else {
+            SessionDiagnostics.shared.record(
+                "webview_entry_blocked_untrusted_origin url=\(diagnosticURL(desiredURL))"
+            )
+            return
+        }
         guard loadedEntryURL != desiredURL else { return }
 
         // A new entry URL means a deliberately new study/session. Never
@@ -179,6 +239,40 @@ final class PersistentWebViewStore: ObservableObject {
         lastMicrophoneState = microphone
     }
 
+    func dispatchEvent(
+        _ name: String,
+        detail: [String: Any]? = nil,
+        completion: (() -> Void)? = nil
+    ) {
+        guard let webView,
+              ["recordingStarted", "recordingStopped", "recordingInterrupted", "recordingFailed"]
+                .contains(name) else {
+            completion?()
+            return
+        }
+        let detailExpression: String
+        if let detail,
+           JSONSerialization.isValidJSONObject(detail),
+           let data = try? JSONSerialization.data(withJSONObject: detail),
+           let json = String(data: data, encoding: .utf8) {
+            detailExpression = ", { detail: \(json) }"
+        } else {
+            detailExpression = ""
+        }
+        let script = "window.dispatchEvent(new CustomEvent('\(name)'\(detailExpression)))"
+        Task { @MainActor in
+            defer { completion?() }
+            do {
+                _ = try await webView.evaluateJavaScript(script)
+                SessionDiagnostics.shared.record("web_event_dispatched name=\(name)")
+            } catch {
+                SessionDiagnostics.shared.record(
+                    "web_event_dispatch_failed name=\(name) error=\(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
     func reset() {
         monitorTimer?.invalidate()
         monitorTimer = nil
@@ -187,6 +281,10 @@ final class PersistentWebViewStore: ObservableObject {
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "recorder")
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
+            // Replacing the document tears down WebRTC MediaStream tracks
+            // immediately, even if SwiftUI retains the UIView briefly during
+            // the navigation transition back to Home.
+            webView.loadHTMLString("", baseURL: nil)
         }
         coordinator = nil
         webView = nil
@@ -252,6 +350,16 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
             SessionDiagnostics.shared.record("web_bridge_invalid_message")
             return
         }
+        guard message.frameInfo.isMainFrame,
+              WebSecurityPolicy.isTrusted(message.frameInfo.securityOrigin) else {
+            SessionDiagnostics.shared.record(
+                "web_bridge_blocked_untrusted_origin origin=" +
+                "\(message.frameInfo.securityOrigin.protocol)://" +
+                "\(message.frameInfo.securityOrigin.host):" +
+                "\(message.frameInfo.securityOrigin.port) mainFrame=\(message.frameInfo.isMainFrame)"
+            )
+            return
+        }
         print("[WebView Bridge] received action: \(action)")
 
         Task { @MainActor in
@@ -268,6 +376,10 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
                 ])
                 guard self.session?.configureNativeUpload(from: body) == true else {
                     SessionDiagnostics.shared.record("web_bridge_start_rejected invalid_upload_context=true")
+                    self.session?.webViewStore.dispatchEvent(
+                        "recordingFailed",
+                        detail: ["reason": "requestRejected"]
+                    )
                     return
                 }
                 self.session?.onRecordingStartedInWebView = { [weak self] recordingId, startedAtDeviceEpochMs in
@@ -293,17 +405,23 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
                 }
                 self.session?.triggerStart()
 
+            case "startSession":
+                SessionDiagnostics.shared.record("web_bridge_start_session")
+                guard self.session?.markSessionStarted() == true else {
+                    SessionDiagnostics.shared.record("web_bridge_start_session_rejected")
+                    return
+                }
+
             case "stopRecording":
-                let completed = body["completed"] as? Bool ?? true
+                // Accept the current `completed` spelling and the concise
+                // `complete` spelling used by newer site payloads.
+                let completed = (body["completed"] as? Bool) ??
+                    (body["complete"] as? Bool) ?? false
                 SessionDiagnostics.shared.record(
-                    "web_bridge_stop_recording completed=\(completed) fieldPresent=\(body["completed"] != nil)"
+                    "web_bridge_stop_recording completed=\(completed) " +
+                    "fieldPresent=\(body["completed"] != nil || body["complete"] != nil)"
                 )
                 self.session?.requestStop(completed: completed)
-                if let webView = self.webView {
-                    _ = try? await webView.evaluateJavaScript(
-                        "window.dispatchEvent(new CustomEvent('recordingStopped'))"
-                    )
-                }
 
             default:
                 SessionDiagnostics.shared.record("web_bridge_unknown_action action=\(action)")
@@ -327,7 +445,20 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
         type: WKMediaCaptureType,
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
-        SessionDiagnostics.shared.record("web_media_permission_granted type=\(String(describing: type))")
+        guard WebSecurityPolicy.isTrusted(origin) else {
+            SessionDiagnostics.shared.record(
+                "web_media_permission_denied_untrusted_origin origin=" +
+                "\(origin.protocol)://\(origin.host):\(origin.port) " +
+                "type=\(String(describing: type))"
+            )
+            decisionHandler(.deny)
+            return
+        }
+
+        SessionDiagnostics.shared.record(
+            "web_media_permission_granted origin=\(origin.protocol)://\(origin.host):\(origin.port) " +
+            "type=\(String(describing: type))"
+        )
         decisionHandler(.grant)
     }
 
@@ -343,23 +474,49 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
             return
         }
 
+        guard let destination = navigationAction.request.url else {
+            SessionDiagnostics.shared.record("webview_navigation_blocked missing_url=true")
+            decisionHandler(.cancel)
+            return
+        }
+
         // `target="_blank"` and `window.open()` have no target frame. Keep the
         // call/session in the one persistent WKWebView and hand the new tab to
-        // the system browser instead.
+        // the system browser only when recording is not active.
         if navigationAction.targetFrame == nil {
-            if openInSystemBrowser(navigationAction.request.url) {
+            if session?.isRecording == true {
+                SessionDiagnostics.shared.record(
+                    "external_navigation_blocked recording=true url=\(diagnosticURL(destination))"
+                )
+                decisionHandler(.cancel)
+            } else if openInSystemBrowser(destination) {
                 decisionHandler(.cancel)
             } else {
                 SessionDiagnostics.shared.record(
-                    "external_navigation_blocked url=\(diagnosticURL(navigationAction.request.url))"
+                    "external_navigation_blocked url=\(diagnosticURL(destination))"
                 )
                 decisionHandler(.cancel)
             }
             return
         }
 
+        guard WebSecurityPolicy.isTrusted(destination) else {
+            if session?.isRecording == true {
+                SessionDiagnostics.shared.record(
+                    "webview_navigation_blocked_untrusted_origin recording=true " +
+                    "url=\(diagnosticURL(destination))"
+                )
+            } else if !openInSystemBrowser(destination) {
+                SessionDiagnostics.shared.record(
+                    "webview_navigation_blocked_untrusted_origin url=\(diagnosticURL(destination))"
+                )
+            }
+            decisionHandler(.cancel)
+            return
+        }
+
         SessionDiagnostics.shared.record(
-            "webview_navigate url=\(diagnosticURL(navigationAction.request.url))"
+            "webview_navigate url=\(diagnosticURL(destination))"
         )
         decisionHandler(.allow)
     }
@@ -373,7 +530,14 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
         // Defensive fallback for WebKit versions that reach the UI delegate
         // without first calling the navigation-policy delegate.
         if !handleAppDeepLink(navigationAction.request.url) {
-            _ = openInSystemBrowser(navigationAction.request.url)
+            if session?.isRecording == true {
+                SessionDiagnostics.shared.record(
+                    "external_navigation_blocked_fallback recording=true " +
+                    "url=\(diagnosticURL(navigationAction.request.url))"
+                )
+            } else {
+                _ = openInSystemBrowser(navigationAction.request.url)
+            }
         }
         return nil
     }

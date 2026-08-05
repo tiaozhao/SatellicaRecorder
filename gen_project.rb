@@ -19,7 +19,7 @@ app.build_configurations.each do |c|
   s['PRODUCT_BUNDLE_IDENTIFIER'] = APP_ID
   s['PRODUCT_NAME'] = 'SatellicaRecorder'
   s['MARKETING_VERSION'] = '1.0.0'
-  s['CURRENT_PROJECT_VERSION'] = '4'
+  s['CURRENT_PROJECT_VERSION'] = '5'
   s['SWIFT_VERSION'] = '5.0'
   s['IPHONEOS_DEPLOYMENT_TARGET'] = '17.0'
   s['TARGETED_DEVICE_FAMILY'] = '1'
@@ -44,7 +44,7 @@ broadcast.build_configurations.each do |c|
   s['PRODUCT_BUNDLE_IDENTIFIER'] = BROADCAST_ID
   s['PRODUCT_NAME'] = 'BroadcastExtension'
   s['MARKETING_VERSION'] = '1.0.0'
-  s['CURRENT_PROJECT_VERSION'] = '4'
+  s['CURRENT_PROJECT_VERSION'] = '5'
   s['SWIFT_VERSION'] = '5.0'
   s['IPHONEOS_DEPLOYMENT_TARGET'] = '17.0'
   s['TARGETED_DEVICE_FAMILY'] = '1'

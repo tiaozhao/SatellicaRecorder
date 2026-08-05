@@ -39,23 +39,50 @@ enum RecorderConstants {
         }
         return url
     }
+    static var recordingsDirectory: URL {
+        containerURL.appendingPathComponent("recordings", isDirectory: true)
+    }
+    static func recordingDirectory(_ recordingId: String) -> URL {
+        recordingsDirectory.appendingPathComponent(recordingId, isDirectory: true)
+    }
+    static func chunksDirectory(for recordingId: String) -> URL {
+        recordingDirectory(recordingId).appendingPathComponent("chunks", isDirectory: true)
+    }
+    static func chunkMetadataDirectory(for recordingId: String) -> URL {
+        recordingDirectory(recordingId).appendingPathComponent("chunk-metadata", isDirectory: true)
+    }
+    static func manifestURL(for recordingId: String) -> URL {
+        recordingDirectory(recordingId).appendingPathComponent("manifest.json")
+    }
+    static func manifestLockURL(for recordingId: String) -> URL {
+        recordingDirectory(recordingId).appendingPathComponent("manifest.lock")
+    }
+    static func uploadContextURL(for recordingId: String) -> URL {
+        recordingDirectory(recordingId).appendingPathComponent("upload-context.json")
+    }
+    static func signedURLCacheURL(for recordingId: String) -> URL {
+        recordingDirectory(recordingId).appendingPathComponent("signed-url-cache.json")
+    }
+    static var activeRecordingId: String? {
+        UserDefaults(suiteName: appGroup)?.string(forKey: activeRecordingIdKey)
+    }
     static var chunksDirectory: URL {
-        containerURL.appendingPathComponent("chunks", isDirectory: true)
+        activeRecordingId.map(chunksDirectory(for:)) ?? containerURL.appendingPathComponent("chunks", isDirectory: true)
     }
     static var chunkMetadataDirectory: URL {
-        containerURL.appendingPathComponent("chunk-metadata", isDirectory: true)
+        activeRecordingId.map(chunkMetadataDirectory(for:)) ?? containerURL.appendingPathComponent("chunk-metadata", isDirectory: true)
     }
     static var manifestURL: URL {
-        containerURL.appendingPathComponent("manifest.json")
+        activeRecordingId.map(manifestURL(for:)) ?? containerURL.appendingPathComponent("manifest.json")
     }
     static var manifestLockURL: URL {
-        containerURL.appendingPathComponent("manifest.lock")
+        activeRecordingId.map(manifestLockURL(for:)) ?? containerURL.appendingPathComponent("manifest.lock")
     }
     static var uploadContextURL: URL {
-        containerURL.appendingPathComponent("upload-context.json")
+        activeRecordingId.map(uploadContextURL(for:)) ?? containerURL.appendingPathComponent("upload-context.json")
     }
     static var signedURLCacheURL: URL {
-        containerURL.appendingPathComponent("signed-url-cache.json")
+        activeRecordingId.map(signedURLCacheURL(for:)) ?? containerURL.appendingPathComponent("signed-url-cache.json")
     }
     static var diagnosticsURL: URL {
         containerURL.appendingPathComponent("recorder-diagnostics.log")
@@ -74,17 +101,21 @@ enum RecorderConstants {
     static let studyIdKey = "study_id"
     static let siteStopCompletedKey = "site_stop_completed"
     static let siteStopRecordingIdKey = "site_stop_recording_id"
+    static let activeRecordingIdKey = "active_recording_id"
+    static let uploadQueueKey = "authorized_upload_queue"
 
     // Darwin notification names
     static let chunkReadyNotification = "com.satellica.recorder.chunk.ready" as CFString
     static let broadcastStartedNotification = "com.satellica.recorder.broadcast.started" as CFString
     static let broadcastFinishedNotification = "com.satellica.recorder.broadcast.finished" as CFString
+    static let broadcastFailedNotification = "com.satellica.recorder.broadcast.failed" as CFString
 
     // Recording parameters
     static let chunkDuration: TimeInterval = 8       // seconds per chunk
     static let videoBitRate: Int = 800_000            // 800 Kbps — ~800 KB per 8s chunk
     static let frameRate: Int = 30
-    static let minFreeDisk: Int64 = 200_000_000       // 200 MB
+    static let minFreeDisk: Int64 = 200_000_000       // emergency stop threshold
+    static let minFreeDiskToStart: Int64 = 500_000_000
 
     static var isAppGroupContainerAvailable: Bool {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) != nil
@@ -176,6 +207,7 @@ struct RecordingManifest: Codable {
     var chunks: [ChunkInfo]
     var interruptedAtMs: Int64? = nil
     var interruptedReason: String? = nil
+    var partialDataLoss: Bool? = nil
 
     static func load() -> RecordingManifest? {
         RecordingManifestStore.load()
@@ -195,19 +227,22 @@ struct RecordingManifest: Codable {
 /// The lock protects the complete read/merge/write transaction, while the
 /// merge prevents a stale extension snapshot from regressing upload progress.
 enum RecordingManifestStore {
-    static func load() -> RecordingManifest? {
-        withLock { loadUnlocked() }
+    static func load(recordingId: String? = nil) -> RecordingManifest? {
+        guard let recordingId = recordingId ?? RecorderConstants.activeRecordingId else { return nil }
+        return withLock(recordingId: recordingId) { loadUnlocked(recordingId: recordingId) }
     }
 
     @discardableResult
     static func mergeAndSave(_ incoming: RecordingManifest) -> Bool {
-        withLock {
+        ensureRecordingDirectory(incoming.sessionId)
+        return withLock(recordingId: incoming.sessionId) {
             var merged = incoming
 
-            if let current = loadUnlocked(), current.sessionId == incoming.sessionId {
+            if let current = loadUnlocked(recordingId: incoming.sessionId), current.sessionId == incoming.sessionId {
                 merged.status = laterSessionStatus(current.status, incoming.status)
                 merged.interruptedAtMs = incoming.interruptedAtMs ?? current.interruptedAtMs
                 merged.interruptedReason = incoming.interruptedReason ?? current.interruptedReason
+                merged.partialDataLoss = incoming.partialDataLoss ?? current.partialDataLoss
 
                 var chunksByIndex = Dictionary(uniqueKeysWithValues: current.chunks.map { ($0.index, $0) })
                 for chunk in incoming.chunks {
@@ -220,7 +255,7 @@ enum RecordingManifestStore {
                 merged.chunks = chunksByIndex.values.sorted { $0.index < $1.index }
             }
 
-            return saveUnlocked(merged)
+            return saveUnlocked(merged, recordingId: incoming.sessionId)
         }
     }
 
@@ -229,16 +264,16 @@ enum RecordingManifestStore {
     /// recorder state to regress upload progress already persisted by the app.
     @discardableResult
     static func upsertChunk(sessionId: String, chunk incoming: ChunkInfo) -> Bool {
-        withLock {
-            guard var current = loadUnlocked(), current.sessionId == sessionId else { return false }
+        withLock(recordingId: sessionId) {
+            guard var current = loadUnlocked(recordingId: sessionId), current.sessionId == sessionId else { return false }
             if let index = current.chunks.firstIndex(where: { $0.index == incoming.index }) {
                 current.chunks[index] = merge(existing: current.chunks[index], incoming: incoming)
             } else {
                 current.chunks.append(incoming)
                 current.chunks.sort { $0.index < $1.index }
             }
-            guard saveUnlocked(current),
-                  let verified = loadUnlocked(),
+            guard saveUnlocked(current, recordingId: sessionId),
+                  let verified = loadUnlocked(recordingId: sessionId),
                   verified.sessionId == sessionId,
                   verified.chunks.contains(where: { $0.index == incoming.index }) else { return false }
             return true
@@ -254,17 +289,28 @@ enum RecordingManifestStore {
         index chunkIndex: Int,
         _ mutation: (inout ChunkInfo) -> Void
     ) -> Bool {
-        withLock {
-            guard var current = loadUnlocked(), current.sessionId == sessionId,
+        withLock(recordingId: sessionId) {
+            guard var current = loadUnlocked(recordingId: sessionId), current.sessionId == sessionId,
                   let index = current.chunks.firstIndex(where: { $0.index == chunkIndex }) else {
                 return false
             }
             mutation(&current.chunks[index])
-            guard saveUnlocked(current),
-                  let verified = loadUnlocked(),
+            guard saveUnlocked(current, recordingId: sessionId),
+                  let verified = loadUnlocked(recordingId: sessionId),
                   verified.sessionId == sessionId,
                   verified.chunks.contains(where: { $0.index == chunkIndex }) else { return false }
             return true
+        }
+    }
+
+    @discardableResult
+    static func removeChunk(sessionId: String, index chunkIndex: Int) -> Bool {
+        withLock(recordingId: sessionId) {
+            guard var current = loadUnlocked(recordingId: sessionId), current.sessionId == sessionId else {
+                return false
+            }
+            current.chunks.removeAll { $0.index == chunkIndex }
+            return saveUnlocked(current, recordingId: sessionId)
         }
     }
 
@@ -273,34 +319,47 @@ enum RecordingManifestStore {
     /// leaving a fully-uploaded recording permanently unable to complete.
     @discardableResult
     static func updateSessionStatus(sessionId: String, status: String) -> Bool {
-        withLock {
-            guard var current = loadUnlocked(), current.sessionId == sessionId else { return false }
+        withLock(recordingId: sessionId) {
+            guard var current = loadUnlocked(recordingId: sessionId), current.sessionId == sessionId else { return false }
             let targetStatus = laterSessionStatus(current.status, status)
             current.status = targetStatus
-            guard saveUnlocked(current),
-                  let verified = loadUnlocked(),
+            guard saveUnlocked(current, recordingId: sessionId),
+                  let verified = loadUnlocked(recordingId: sessionId),
                   verified.sessionId == sessionId,
                   verified.status == targetStatus else { return false }
             return true
         }
     }
 
-    static func clear() {
-        withLock {
-            try? FileManager.default.removeItem(at: RecorderConstants.manifestURL)
+    @discardableResult
+    static func markPartialDataLoss(sessionId: String) -> Bool {
+        withLock(recordingId: sessionId) {
+            guard var current = loadUnlocked(recordingId: sessionId), current.sessionId == sessionId else {
+                return false
+            }
+            current.partialDataLoss = true
+            return saveUnlocked(current, recordingId: sessionId)
         }
     }
 
-    private static func loadUnlocked() -> RecordingManifest? {
-        guard let data = try? Data(contentsOf: RecorderConstants.manifestURL) else { return nil }
+    static func clear(recordingId: String? = nil) {
+        guard let recordingId = recordingId ?? RecorderConstants.activeRecordingId else { return }
+        withLock(recordingId: recordingId) {
+            try? FileManager.default.removeItem(at: RecorderConstants.manifestURL(for: recordingId))
+        }
+    }
+
+    private static func loadUnlocked(recordingId: String) -> RecordingManifest? {
+        guard let data = try? Data(contentsOf: RecorderConstants.manifestURL(for: recordingId)) else { return nil }
         return try? JSONDecoder().decode(RecordingManifest.self, from: data)
     }
 
-    private static func saveUnlocked(_ manifest: RecordingManifest) -> Bool {
+    private static func saveUnlocked(_ manifest: RecordingManifest, recordingId: String) -> Bool {
+        ensureRecordingDirectory(recordingId)
         guard let data = try? JSONEncoder().encode(manifest) else { return false }
         do {
             try data.write(
-                to: RecorderConstants.manifestURL,
+                to: RecorderConstants.manifestURL(for: recordingId),
                 options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
             )
             return true
@@ -354,8 +413,16 @@ enum RecordingManifestStore {
         return (rank[rhs, default: -1] >= rank[lhs, default: -1]) ? rhs : lhs
     }
 
-    private static func withLock<T>(_ body: () -> T) -> T {
-        let path = RecorderConstants.manifestLockURL.path
+    private static func ensureRecordingDirectory(_ recordingId: String) {
+        try? FileManager.default.createDirectory(
+            at: RecorderConstants.recordingDirectory(recordingId),
+            withIntermediateDirectories: true
+        )
+    }
+
+    private static func withLock<T>(recordingId: String, _ body: () -> T) -> T {
+        ensureRecordingDirectory(recordingId)
+        let path = RecorderConstants.manifestLockURL(for: recordingId).path
         let descriptor = path.withCString {
             Darwin.open($0, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         }
@@ -382,7 +449,7 @@ private struct ChunkMetadataRecord: Codable {
 
 enum ChunkMetadataStore {
     static func load(sessionId: String, index: Int) -> ChunkInfo? {
-        let url = metadataURL(for: index)
+        let url = metadataURL(sessionId: sessionId, index: index)
         guard let data = try? Data(contentsOf: url),
               let record = try? JSONDecoder().decode(ChunkMetadataRecord.self, from: data),
               record.sessionId == sessionId,
@@ -395,7 +462,7 @@ enum ChunkMetadataStore {
     /// manifest update was interrupted.
     static func loadAll(sessionId: String) -> [ChunkInfo] {
         guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: RecorderConstants.chunkMetadataDirectory,
+            at: RecorderConstants.chunkMetadataDirectory(for: sessionId),
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return [] }
@@ -411,12 +478,12 @@ enum ChunkMetadataStore {
 
     @discardableResult
     static func save(sessionId: String, chunk: ChunkInfo) -> Bool {
-        ensureDirectory()
+        ensureDirectory(sessionId: sessionId)
         let record = ChunkMetadataRecord(sessionId: sessionId, chunk: chunk)
         guard let data = try? JSONEncoder().encode(record) else { return false }
         do {
             try data.write(
-                to: metadataURL(for: chunk.index),
+                to: metadataURL(sessionId: sessionId, index: chunk.index),
                 options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
             )
             guard let verified = load(sessionId: sessionId, index: chunk.index) else { return false }
@@ -429,19 +496,24 @@ enum ChunkMetadataStore {
         }
     }
 
-    static func clear() {
-        try? FileManager.default.removeItem(at: RecorderConstants.chunkMetadataDirectory)
+    static func clear(recordingId: String? = nil) {
+        guard let recordingId = recordingId ?? RecorderConstants.activeRecordingId else { return }
+        try? FileManager.default.removeItem(at: RecorderConstants.chunkMetadataDirectory(for: recordingId))
     }
 
-    private static func ensureDirectory() {
+    static func remove(sessionId: String, index: Int) {
+        try? FileManager.default.removeItem(at: metadataURL(sessionId: sessionId, index: index))
+    }
+
+    private static func ensureDirectory(sessionId: String) {
         try? FileManager.default.createDirectory(
-            at: RecorderConstants.chunkMetadataDirectory,
+            at: RecorderConstants.chunkMetadataDirectory(for: sessionId),
             withIntermediateDirectories: true
         )
     }
 
-    private static func metadataURL(for index: Int) -> URL {
-        RecorderConstants.chunkMetadataDirectory
+    private static func metadataURL(sessionId: String, index: Int) -> URL {
+        RecorderConstants.chunkMetadataDirectory(for: sessionId)
             .appendingPathComponent(String(format: "chunk_%04d.json", index))
     }
 }
@@ -462,9 +534,11 @@ struct NativeUploadContext: Codable, Equatable {
     let studyId: String
     let createdAt: Date
     var startedAtDeviceEpochMs: Int64?
-    /// `false` means the site ended the interview early. The app uploads every
-    /// produced chunk but intentionally does not call `/complete`.
     var siteCompleted: Bool? = nil
+    var sessionStarted: Bool? = nil
+    var uploadAuthorized: Bool? = nil
+    var stopRequestedBySite: Bool? = nil
+    var stopRequestedAtDeviceEpochMs: Int64? = nil
 
     var chunkURLsEndpoint: URL {
         apiOrigin
@@ -492,16 +566,24 @@ struct NativeUploadContext: Codable, Equatable {
 }
 
 enum NativeUploadContextStore {
-    static func load() -> NativeUploadContext? {
-        guard let data = try? Data(contentsOf: RecorderConstants.uploadContextURL) else { return nil }
+    static func load(recordingId: String? = nil) -> NativeUploadContext? {
+        guard let recordingId = recordingId ?? RecorderConstants.activeRecordingId,
+              let data = try? Data(contentsOf: RecorderConstants.uploadContextURL(for: recordingId)) else { return nil }
         return try? JSONDecoder().decode(NativeUploadContext.self, from: data)
     }
 
     @discardableResult
     static func save(_ context: NativeUploadContext) -> Bool {
+        try? FileManager.default.createDirectory(
+            at: RecorderConstants.recordingDirectory(context.recordingId),
+            withIntermediateDirectories: true
+        )
         guard let data = try? JSONEncoder().encode(context) else { return false }
         do {
-            try data.write(to: RecorderConstants.uploadContextURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try data.write(
+                to: RecorderConstants.uploadContextURL(for: context.recordingId),
+                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+            )
             return true
         } catch {
             print("[NativeUploadContextStore] save failed: \(error.localizedDescription)")
@@ -509,8 +591,116 @@ enum NativeUploadContextStore {
         }
     }
 
-    static func clear() {
-        try? FileManager.default.removeItem(at: RecorderConstants.uploadContextURL)
-        try? FileManager.default.removeItem(at: RecorderConstants.signedURLCacheURL)
+    static func clear(recordingId: String? = nil) {
+        guard let recordingId = recordingId ?? RecorderConstants.activeRecordingId else { return }
+        try? FileManager.default.removeItem(at: RecorderConstants.uploadContextURL(for: recordingId))
+        try? FileManager.default.removeItem(at: RecorderConstants.signedURLCacheURL(for: recordingId))
+    }
+}
+
+// MARK: - Retained recordings and authorized upload queue
+
+enum RecordingStore {
+    static func prepare() {
+        try? FileManager.default.createDirectory(
+            at: RecorderConstants.recordingsDirectory,
+            withIntermediateDirectories: true
+        )
+        migrateLegacyRecordingIfNeeded()
+    }
+
+    static func recordingIds() -> [String] {
+        prepare()
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: RecorderConstants.recordingsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return urls.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+            .map(\.lastPathComponent)
+            .filter { recordingId in
+                // A retained recording must remain discoverable even when its
+                // upload context is temporarily unreadable. Eligibility only
+                // needs the opaque recordingId; actual upload still requires
+                // a valid context and token.
+                if let manifest = RecordingManifestStore.load(recordingId: recordingId) {
+                    return manifest.sessionId == recordingId
+                }
+                return NativeUploadContextStore.load(recordingId: recordingId)?.recordingId == recordingId
+            }
+            .sorted()
+    }
+
+    static func setActiveRecordingId(_ recordingId: String?) {
+        let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
+        if let recordingId {
+            defaults?.set(recordingId, forKey: RecorderConstants.activeRecordingIdKey)
+        } else {
+            defaults?.removeObject(forKey: RecorderConstants.activeRecordingIdKey)
+        }
+        defaults?.synchronize()
+    }
+
+    @discardableResult
+    static func delete(recordingId: String) -> Bool {
+        let directory = RecorderConstants.recordingDirectory(recordingId)
+        try? FileManager.default.removeItem(at: directory)
+        let removed = !FileManager.default.fileExists(atPath: directory.path)
+        UploadQueueStore.remove(recordingId)
+        if RecorderConstants.activeRecordingId == recordingId { setActiveRecordingId(nil) }
+        return removed
+    }
+
+    private static func migrateLegacyRecordingIfNeeded() {
+        let legacyManifestURL = RecorderConstants.containerURL.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: legacyManifestURL),
+              let manifest = try? JSONDecoder().decode(RecordingManifest.self, from: data),
+              !FileManager.default.fileExists(atPath: RecorderConstants.recordingDirectory(manifest.sessionId).path) else {
+            return
+        }
+        let destination = RecorderConstants.recordingDirectory(manifest.sessionId)
+        try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let names = ["manifest.json", "manifest.lock", "upload-context.json", "signed-url-cache.json", "chunks", "chunk-metadata"]
+        for name in names {
+            let source = RecorderConstants.containerURL.appendingPathComponent(name)
+            let target = destination.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            try? FileManager.default.moveItem(at: source, to: target)
+        }
+        setActiveRecordingId(manifest.sessionId)
+        if var context = NativeUploadContextStore.load(recordingId: manifest.sessionId),
+           context.siteCompleted == true {
+            context.uploadAuthorized = true
+            if NativeUploadContextStore.save(context) {
+                UploadQueueStore.enqueue(manifest.sessionId)
+            }
+        }
+    }
+}
+
+enum UploadQueueStore {
+    static func all() -> [String] {
+        UserDefaults(suiteName: RecorderConstants.appGroup)?.stringArray(
+            forKey: RecorderConstants.uploadQueueKey
+        ) ?? []
+    }
+
+    static func enqueue(_ recordingId: String) {
+        var ids = all()
+        guard !ids.contains(recordingId) else { return }
+        ids.append(recordingId)
+        save(ids)
+    }
+
+    static func remove(_ recordingId: String) {
+        save(all().filter { $0 != recordingId })
+    }
+
+    private static func save(_ ids: [String]) {
+        let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
+        defaults?.set(ids, forKey: RecorderConstants.uploadQueueKey)
+        defaults?.synchronize()
     }
 }

@@ -165,6 +165,7 @@ final class SampleHandler: RPBroadcastSampleHandler, @unchecked Sendable {
         }
 
         if let rejectionError {
+            postNotification(RecorderConstants.broadcastFailedNotification)
             finishBroadcastWithError(rejectionError)
             return
         }
@@ -968,6 +969,7 @@ final class SampleHandler: RPBroadcastSampleHandler, @unchecked Sendable {
     }
 
     private func markStopped() {
+        discardInvalidTrailingChunks()
         let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
         defaults?.set("stopped", forKey: RecorderConstants.broadcastStatusKey)
         defaults?.set(
@@ -1003,6 +1005,36 @@ final class SampleHandler: RPBroadcastSampleHandler, @unchecked Sendable {
             "reason": reason,
             "interruptedAtMs": interruptedAtMs
         ])
+    }
+
+    /// A writer can be terminated while its final MP4 atom is being closed.
+    /// Only corrupt chunks at the tail are safely discardable; a corrupt chunk
+    /// between valid indexes remains recorded as data loss for uploader review.
+    private func discardInvalidTrailingChunks() {
+        guard var latest = RecordingManifestStore.load(recordingId: sessionId) else { return }
+        var discarded: [Int] = []
+        while let tail = latest.chunks.max(by: { $0.index < $1.index }), tail.status == .dataLost {
+            let partialURL = RecorderConstants.chunksDirectory(for: sessionId)
+                .appendingPathComponent(String(format: "chunk_%04d.part.mp4", tail.index))
+            let finalURL = RecorderConstants.chunksDirectory(for: sessionId)
+                .appendingPathComponent(tail.fileName)
+            try? FileManager.default.removeItem(at: partialURL)
+            try? FileManager.default.removeItem(at: finalURL)
+            ChunkMetadataStore.remove(sessionId: sessionId, index: tail.index)
+            guard RecordingManifestStore.removeChunk(sessionId: sessionId, index: tail.index) else { break }
+            discarded.append(tail.index)
+            latest.chunks.removeAll { $0.index == tail.index }
+        }
+        if !discarded.isEmpty {
+            manifest?.chunks.removeAll { discarded.contains($0.index) }
+            manifest?.partialDataLoss = true
+            _ = RecordingManifestStore.markPartialDataLoss(sessionId: sessionId)
+            RecorderLog.write("extension", "trailing_invalid_chunks_discarded", [
+                "recordingId": sessionId,
+                "indexes": discarded.sorted().map(String.init).joined(separator: ","),
+                "partialDataLoss": true
+            ])
+        }
     }
 
     // MARK: - Helpers

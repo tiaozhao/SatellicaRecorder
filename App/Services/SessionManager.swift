@@ -4,11 +4,23 @@
 
 import SwiftUI
 
+struct SessionExitAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private struct UploadEligibilityResponse: Decodable {
+    let uploadable: [String]
+    let alreadyUploaded: [String]
+}
+
 @MainActor
 final class SessionManager: ObservableObject {
     @Published var path: [AppRoute] = []
     @Published var isRecording = false
     @Published var broadcastStatus: String = "idle"  // idle, recording, stopped, completed
+    @Published var sessionExitAlert: SessionExitAlert?
 
     /// The URL to load in the WebView (set by deep link handler).
     @Published var webViewURL: URL?
@@ -16,16 +28,20 @@ final class SessionManager: ObservableObject {
     let uploader = ChunkUploader.shared
     let webViewStore = PersistentWebViewStore()
     private var stateAuditTimer: Timer?
+    private var isCheckingEligibility = false
+    private var eligibilityRetryWorkItem: DispatchWorkItem?
+    private var isAwaitingBroadcastStart = false
 
     /// Called by WebView coordinator when recording starts (to notify the web page).
     var onRecordingStartedInWebView: ((String, Int64) -> Void)?
 
     init() {
         _ = SessionDiagnostics.shared
+        RecordingStore.prepare()
         listenForDarwinNotifications()
+        uploader.cancelUnauthorizedBackgroundTasks()
         uploader.onAllUploaded = { [weak self] in
-            self?.broadcastStatus = "completed"
-            UIApplication.shared.isIdleTimerDisabled = false
+            self?.finishCurrentUpload()
         }
         let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -49,6 +65,13 @@ final class SessionManager: ObservableObject {
     // MARK: - Deep link handling
 
     func handleDeepLink(_ url: URL) {
+        if !UploadQueueStore.all().isEmpty || uploader.isUploading {
+            abandonUnstartedRecordingAttempt()
+            SessionDiagnostics.shared.record("deep_link_blocked upload_queue_active=true")
+            path = [.stop]
+            processUploadQueueIfPossible()
+            return
+        }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: true)
         let urlPath = components?.path ?? url.path
         let urlHost = components?.host ?? ""
@@ -90,6 +113,14 @@ final class SessionManager: ObservableObject {
                     "reason": "invalid_interview_destination",
                     "host": urlHost,
                     "path": routePath
+                ])
+                return
+            }
+            guard WebSecurityPolicy.isTrusted(destination) else {
+                RecorderLog.write("app", "deep_link_rejected", [
+                    "reason": "untrusted_interview_origin",
+                    "host": destination.host ?? "unknown",
+                    "path": destination.path
                 ])
                 return
             }
@@ -187,12 +218,25 @@ final class SessionManager: ObservableObject {
             return false
         }
 
-        // The current container layout intentionally supports one durable
-        // recording at a time. Never let a second start erase chunks that have
-        // not yet been accepted by /complete.
-        if let existing = RecordingManifest.load(), existing.status != "completed" {
+        abandonUnstartedRecordingAttempt()
+        guard UploadQueueStore.all().isEmpty, !uploader.isUploading, !isRecording else {
+            SessionDiagnostics.shared.record("upload_context_rejected recording_or_upload_active=true")
+            processUploadQueueIfPossible()
+            return false
+        }
+        guard availableDiskBytes() >= RecorderConstants.minFreeDiskToStart else {
+            SessionDiagnostics.shared.record("upload_context_rejected insufficient_start_disk=true")
+            return false
+        }
+        RecordingStore.prepare()
+        for staleId in RecordingStore.recordingIds() where
+            RecordingManifestStore.load(recordingId: staleId) == nil &&
+            NativeUploadContextStore.load(recordingId: staleId)?.startedAtDeviceEpochMs == nil {
+            RecordingStore.delete(recordingId: staleId)
+        }
+        if RecordingStore.recordingIds().contains(recordingId) {
             SessionDiagnostics.shared.record(
-                "upload_context_rejected unfinished_recording=true existing=\(existing.sessionId)"
+                "upload_context_rejected retained_recording_exists=true existing=\(recordingId)"
             )
             return false
         }
@@ -222,9 +266,15 @@ final class SessionManager: ObservableObject {
             interviewLink: interviewLink,
             studyId: studyId,
             createdAt: Date(),
-            startedAtDeviceEpochMs: nil
+            startedAtDeviceEpochMs: nil,
+            siteCompleted: nil,
+            sessionStarted: false,
+            uploadAuthorized: false,
+            stopRequestedBySite: false,
+            stopRequestedAtDeviceEpochMs: nil
         )
 
+        RecordingStore.setActiveRecordingId(recordingId)
         guard NativeUploadContextStore.save(context),
               let persistedContext = NativeUploadContextStore.load(),
               persistedContext.recordingId == context.recordingId,
@@ -232,6 +282,7 @@ final class SessionManager: ObservableObject {
               persistedContext.chunkSeconds == context.chunkSeconds,
               persistedContext.maxChunkBytes == context.maxChunkBytes else {
             SessionDiagnostics.shared.record("upload_context_persist_failed")
+            RecordingStore.delete(recordingId: recordingId)
             return false
         }
         RecorderLog.write("app", "upload_context_saved", [
@@ -243,24 +294,49 @@ final class SessionManager: ObservableObject {
             "hasInterviewLink": !interviewLink.isEmpty,
             "hasStudyId": !studyId.isEmpty
         ])
+        isAwaitingBroadcastStart = true
         return true
     }
 
-    func requestStop(completed: Bool = true) {
+    func markSessionStarted() -> Bool {
+        guard isRecording, var context = NativeUploadContextStore.load() else { return false }
+        context.sessionStarted = true
+        let saved = NativeUploadContextStore.save(context)
+        SessionDiagnostics.shared.record(
+            "site_session_started recordingId=\(context.recordingId) saved=\(saved)"
+        )
+        return saved
+    }
+
+    func requestStop(completed: Bool = false) {
         SessionDiagnostics.shared.record("recording_stop_requested completed=\(completed)")
         let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
+        var persistedCompleted = completed
         if var context = NativeUploadContextStore.load() {
-            context.siteCompleted = completed
+            // Upload authorization is sticky. A duplicate late `false` message
+            // can never undo a previously persisted `complete: true` decision.
+            let effectiveCompleted = context.uploadAuthorized == true || completed
+            persistedCompleted = effectiveCompleted
+            context.siteCompleted = effectiveCompleted
+            context.uploadAuthorized = effectiveCompleted
+            context.stopRequestedBySite = true
+            context.stopRequestedAtDeviceEpochMs = nowDeviceEpochMs()
             let saved = NativeUploadContextStore.save(context)
-            let verified = NativeUploadContextStore.load()?.siteCompleted == completed
+            let verified = NativeUploadContextStore.load()?.uploadAuthorized == effectiveCompleted
             SessionDiagnostics.shared.record(
-                "recording_stop_mode_persisted completed=\(completed) saved=\(saved) verified=\(verified)"
+                "recording_stop_mode_persisted completed=\(effectiveCompleted) saved=\(saved) verified=\(verified)"
             )
+            if effectiveCompleted {
+                UploadQueueStore.enqueue(context.recordingId)
+                webViewStore.reset()
+                CallAudioSessionManager.shared.deactivate()
+                path = [.stop]
+            }
             defaults?.set(context.recordingId, forKey: RecorderConstants.siteStopRecordingIdKey)
         }
         // Independent fallback in case the context file is temporarily
         // unavailable during a process restart.
-        defaults?.set(completed, forKey: RecorderConstants.siteStopCompletedKey)
+        defaults?.set(persistedCompleted, forKey: RecorderConstants.siteStopCompletedKey)
         defaults?.set(true, forKey: RecorderConstants.stopRequestedKey)
         defaults?.synchronize()
     }
@@ -291,48 +367,25 @@ final class SessionManager: ObservableObject {
     }
 
     func checkPendingState() {
+        RecordingStore.prepare()
         let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
-        var manifest = RecordingManifest.load()
+        let manifest = RecordingManifest.load()
         let persistedStatus = defaults?.string(forKey: RecorderConstants.broadcastStatusKey) ?? "idle"
-        var status = manifest?.status == "completed" ? "completed" : persistedStatus
-        var recoveredStaleBroadcast = false
-
-        if status == "recording", var recordingManifest = manifest,
-           recordingManifest.status == "recording" {
-            let heartbeatMs = Int64(defaults?.double(
-                forKey: RecorderConstants.broadcastHeartbeatMsKey
-            ) ?? 0)
-            let nowMs = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
-            if heartbeatMs > 0, nowMs - heartbeatMs > 120_000 {
-                recordingManifest.status = "stopped"
-                recordingManifest.interruptedAtMs = nowMs
-                recordingManifest.interruptedReason = "broadcastHeartbeatExpired"
-                if recordingManifest.save(), RecordingManifest.load()?.status == "stopped" {
-                    defaults?.set(true, forKey: RecorderConstants.stopRequestedKey)
-                    defaults?.set("stopped", forKey: RecorderConstants.broadcastStatusKey)
-                    defaults?.synchronize()
-                    manifest = RecordingManifest.load()
-                    status = "stopped"
-                    recoveredStaleBroadcast = true
-                    SessionDiagnostics.shared.record(
-                        "broadcast_stale_heartbeat_recovered ageMs=\(nowMs - heartbeatMs)"
-                    )
-                } else {
-                    SessionDiagnostics.shared.record("broadcast_stale_heartbeat_recovery_failed")
-                }
-            }
-        }
+        let status = manifest?.status == "completed" ? "completed" : persistedStatus
         print("[SessionManager] checkPendingState: broadcastStatus=\(status)")
 
         isRecording = (status == "recording")
-
         broadcastStatus = status
-
-        uploader.uploadPendingChunks()
-
-        if status == "stopped" && (path.isEmpty || recoveredStaleBroadcast) && broadcastStatus != "completed" {
-            path = [.stop]
+        if !isRecording, !UploadQueueStore.all().isEmpty {
+            processUploadQueueIfPossible()
+        } else if status == "stopped", UploadQueueStore.all().isEmpty {
+            // A retained, incomplete session belongs on Home after a relaunch.
+            RecordingStore.setActiveRecordingId(nil)
+            broadcastStatus = "idle"
+            defaults?.set("idle", forKey: RecorderConstants.broadcastStatusKey)
+            defaults?.synchronize()
         }
+        Task { await checkUploadEligibility() }
     }
 
     // MARK: - Darwin notification listeners
@@ -358,10 +411,17 @@ final class SessionManager: ObservableObject {
             let mgr = Unmanaged<SessionManager>.fromOpaque(obs).takeUnretainedValue()
             Task { @MainActor in mgr.onChunkReady() }
         }, RecorderConstants.chunkReadyNotification, nil, .deliverImmediately)
+
+        CFNotificationCenterAddObserver(center, observer, { _, obs, _, _, _ in
+            guard let obs else { return }
+            let mgr = Unmanaged<SessionManager>.fromOpaque(obs).takeUnretainedValue()
+            Task { @MainActor in mgr.onBroadcastFailed() }
+        }, RecorderConstants.broadcastFailedNotification, nil, .deliverImmediately)
     }
 
     deinit {
         stateAuditTimer?.invalidate()
+        eligibilityRetryWorkItem?.cancel()
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterRemoveEveryObserver(center, Unmanaged.passUnretained(self).toOpaque())
     }
@@ -370,6 +430,7 @@ final class SessionManager: ObservableObject {
         print("[SessionManager] 🟢 broadcastStarted")
         SessionDiagnostics.shared.record("broadcast_started")
         uploader.reset()
+        isAwaitingBroadcastStart = false
         isRecording = true
         broadcastStatus = "recording"
 
@@ -396,17 +457,57 @@ final class SessionManager: ObservableObject {
         SessionDiagnostics.shared.record("broadcast_finished")
         isRecording = false
 
-        if broadcastStatus != "completed" {
-            broadcastStatus = "stopped"
+        broadcastStatus = "stopped"
+
+        let stoppedManifest = RecordingManifest.load()
+        print("[SessionManager] manifest chunks: \(stoppedManifest?.chunks.count ?? 0), status: \(stoppedManifest?.status ?? "nil")")
+
+        guard let recordingId = RecorderConstants.activeRecordingId,
+              let context = NativeUploadContextStore.load(recordingId: recordingId) else {
+            RecordingStore.setActiveRecordingId(nil)
+            broadcastStatus = "idle"
+            return
         }
 
-        let manifest = RecordingManifest.load()
-        print("[SessionManager] manifest chunks: \(manifest?.chunks.count ?? 0), status: \(manifest?.status ?? "nil")")
-
-        uploader.uploadPendingChunks()
-
-        if !path.contains(.stop) {
+        if context.uploadAuthorized == true {
             path = [.stop]
+            processUploadQueueIfPossible()
+            return
+        }
+
+        let manifest = RecordingManifestStore.load(recordingId: recordingId)
+        let atMs = manifest?.interruptedAtMs ?? context.stopRequestedAtDeviceEpochMs ?? nowDeviceEpochMs()
+        if context.sessionStarted == true {
+            let alert = SessionExitAlert(
+                title: context.stopRequestedBySite == true ? "Session ended" : "Session interrupted",
+                message: context.stopRequestedBySite == true
+                    ? "This session ended before completion. Your recording has been saved safely on this device."
+                    : "Screen recording stopped, so this session can’t continue. Your recording has been saved safely on this device."
+            )
+            let returnHome: () -> Void = { [weak self] in
+                guard let self else { return }
+                self.returnHomeAfterStoppedSession(presenting: alert)
+            }
+            if context.stopRequestedBySite == true {
+                dispatchWebEvent("recordingStopped", completion: returnHome)
+            } else {
+                dispatchWebEvent("recordingInterrupted", detail: [
+                    "reason": webInterruptionReason(manifest?.interruptedReason),
+                    "atDeviceEpochMs": atMs
+                ], completion: returnHome)
+            }
+        } else {
+            if context.stopRequestedBySite == true {
+                dispatchWebEvent("recordingStopped")
+            } else {
+                dispatchWebEvent("recordingInterrupted", detail: [
+                    "reason": webInterruptionReason(manifest?.interruptedReason),
+                    "atDeviceEpochMs": atMs
+                ])
+            }
+            RecordingStore.delete(recordingId: recordingId)
+            resetSharedBroadcastFlags()
+            broadcastStatus = "idle"
         }
     }
 
@@ -418,21 +519,283 @@ final class SessionManager: ObservableObject {
             "chunkCount": manifest?.chunks.count ?? 0,
             "latestIndex": manifest?.chunks.map(\.index).max() ?? -1
         ])
+        // Chunks remain local until `complete: true` or backend eligibility.
+    }
+
+    private func onBroadcastFailed() {
+        guard !isRecording, let recordingId = RecorderConstants.activeRecordingId else { return }
+        isAwaitingBroadcastStart = false
+        dispatchWebEvent("recordingFailed", detail: ["reason": "startFailed"])
+        RecordingStore.delete(recordingId: recordingId)
+        resetSharedBroadcastFlags()
+        broadcastStatus = "idle"
+        SessionDiagnostics.shared.record("broadcast_start_failed")
+    }
+
+    func leaveInterruptedSession() {
+        sessionExitAlert = nil
+        RecordingStore.setActiveRecordingId(nil)
+        resetSharedBroadcastFlags()
+        broadcastStatus = "idle"
+        webViewStore.reset()
+        webViewURL = nil
+        CallAudioSessionManager.shared.deactivate()
+        UIApplication.shared.isIdleTimerDisabled = false
+        path = []
+        processUploadQueueIfPossible()
+        Task { await checkUploadEligibility() }
+    }
+
+    /// Explicitly leaving the Site is the lifecycle boundary for its media
+    /// context. The WKWebView remains persistent while a Site session is on
+    /// screen, but it must not keep WebRTC tracks alive behind the App Home.
+    func returnHomeFromWebSession() {
+        guard !isRecording else {
+            SessionDiagnostics.shared.record("web_session_exit_blocked recording=true")
+            return
+        }
+        abandonUnstartedRecordingAttempt()
+        webViewStore.reset()
+        webViewURL = nil
+        CallAudioSessionManager.shared.deactivate()
+        UIApplication.shared.isIdleTimerDisabled = false
+        path = []
+        SessionDiagnostics.shared.record("web_session_exited_to_home")
+    }
+
+    private func processUploadQueueIfPossible() {
+        guard !isRecording, !isAwaitingBroadcastStart, sessionExitAlert == nil,
+              let recordingId = UploadQueueStore.all().first else { return }
+        guard NativeUploadContextStore.load(recordingId: recordingId)?.uploadAuthorized == true else {
+            UploadQueueStore.remove(recordingId)
+            processUploadQueueIfPossible()
+            return
+        }
+        if RecorderConstants.activeRecordingId != recordingId {
+            uploader.reset()
+            RecordingStore.setActiveRecordingId(recordingId)
+        }
+        if path.contains(.session) {
+            webViewStore.reset()
+            webViewURL = nil
+            CallAudioSessionManager.shared.deactivate()
+        }
+        path = [.stop]
         uploader.uploadPendingChunks()
     }
 
-    func resetCompletedSession() {
+    private func finishCurrentUpload() {
+        guard let recordingId = RecorderConstants.activeRecordingId else { return }
+        let deleted = RecordingStore.delete(recordingId: recordingId)
+        if !deleted { scheduleEligibilityRetry() }
+        UIApplication.shared.isIdleTimerDisabled = false
+        if UploadQueueStore.all().isEmpty {
+            broadcastStatus = "completed"
+        } else {
+            broadcastStatus = "stopped"
+            uploader.reset()
+            processUploadQueueIfPossible()
+        }
+    }
+
+    private func checkUploadEligibility() async {
+        guard !isCheckingEligibility else { return }
+        let activeId = isRecording ? RecorderConstants.activeRecordingId : nil
+        let ids = RecordingStore.recordingIds().filter { recordingId in
+            guard recordingId != activeId,
+                  let status = RecordingManifestStore.load(recordingId: recordingId)?.status else {
+                return false
+            }
+            return status == "stopped" || status == "completed"
+        }
+        guard !ids.isEmpty else {
+            eligibilityRetryWorkItem?.cancel()
+            eligibilityRetryWorkItem = nil
+            return
+        }
+        eligibilityRetryWorkItem?.cancel()
+        eligibilityRetryWorkItem = nil
+        isCheckingEligibility = true
+        defer { isCheckingEligibility = false }
+        var shouldRetry = false
+        var hasUnresolvedUploadable = false
+        var hasMissingUploadContext = false
+
+        for start in stride(from: 0, to: ids.count, by: 100) {
+            let requested = Array(ids[start..<min(start + 100, ids.count)])
+            do {
+                let endpoint = RecorderConstants.siteBaseURL
+                    .appendingPathComponent("api")
+                    .appendingPathComponent("recordings")
+                    .appendingPathComponent("upload-eligibility")
+                var request = URLRequest(url: endpoint)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONEncoder().encode(["recordingIds": requested])
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    SessionDiagnostics.shared.record("upload_eligibility_http_error")
+                    shouldRetry = true
+                    continue
+                }
+                let result = try JSONDecoder().decode(UploadEligibilityResponse.self, from: data)
+                let requestedSet = Set(requested)
+                let uploadable = Set(result.uploadable)
+                let alreadyUploaded = Set(result.alreadyUploaded)
+                guard uploadable.isSubset(of: requestedSet),
+                      alreadyUploaded.isSubset(of: requestedSet),
+                      uploadable.isDisjoint(with: alreadyUploaded) else {
+                    SessionDiagnostics.shared.record("upload_eligibility_invalid_response")
+                    shouldRetry = true
+                    continue
+                }
+                for recordingId in alreadyUploaded {
+                    uploader.cancelBackgroundTasks(recordingId: recordingId)
+                    if RecorderConstants.activeRecordingId == recordingId {
+                        uploader.reset()
+                    }
+                    if !RecordingStore.delete(recordingId: recordingId) {
+                        shouldRetry = true
+                    }
+                }
+                for recordingId in uploadable {
+                    guard var context = NativeUploadContextStore.load(recordingId: recordingId) else {
+                        hasUnresolvedUploadable = true
+                        let contextExists = FileManager.default.fileExists(
+                            atPath: RecorderConstants.uploadContextURL(for: recordingId).path
+                        )
+                        SessionDiagnostics.shared.record(
+                            "upload_eligibility_context_unavailable recordingId=\(recordingId) " +
+                            "fileExists=\(contextExists)"
+                        )
+                        // A protected or temporarily unreadable file may become
+                        // available without user intervention. A truly missing
+                        // token cannot be reconstructed by this endpoint, so it
+                        // is retried on the next normal app state audit instead
+                        // of creating a permanent 30-second network loop.
+                        if contextExists {
+                            shouldRetry = true
+                        } else {
+                            hasMissingUploadContext = true
+                        }
+                        continue
+                    }
+                    context.uploadAuthorized = true
+                    context.siteCompleted = true
+                    guard NativeUploadContextStore.save(context),
+                          NativeUploadContextStore.load(recordingId: recordingId)?.uploadAuthorized == true else {
+                        shouldRetry = true
+                        hasUnresolvedUploadable = true
+                        SessionDiagnostics.shared.record(
+                            "upload_eligibility_authorization_persist_failed recordingId=\(recordingId)"
+                        )
+                        continue
+                    }
+                    UploadQueueStore.enqueue(recordingId)
+                }
+            } catch {
+                shouldRetry = true
+                SessionDiagnostics.shared.record(
+                    "upload_eligibility_network_or_decode_error error=\(error.localizedDescription)"
+                )
+            }
+        }
+        processUploadQueueIfPossible()
+        if hasMissingUploadContext, UploadQueueStore.all().isEmpty,
+           !uploader.isUploading, !isRecording {
+            if path == [.stop] { path = [] }
+            broadcastStatus = "idle"
+        } else if UploadQueueStore.all().isEmpty, path == [.stop], !isRecording,
+           !hasUnresolvedUploadable {
+            broadcastStatus = "completed"
+        } else if hasUnresolvedUploadable, !isRecording {
+            broadcastStatus = "stopped"
+        }
+        if shouldRetry { scheduleEligibilityRetry() }
+    }
+
+    private func scheduleEligibilityRetry() {
+        guard eligibilityRetryWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.eligibilityRetryWorkItem = nil
+            Task { await self.checkUploadEligibility() }
+        }
+        eligibilityRetryWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: item)
+    }
+
+    private func dispatchWebEvent(
+        _ name: String,
+        detail: [String: Any]? = nil,
+        completion: (() -> Void)? = nil
+    ) {
+        webViewStore.dispatchEvent(name, detail: detail, completion: completion)
+    }
+
+    private func returnHomeAfterStoppedSession(presenting alert: SessionExitAlert) {
+        RecordingStore.setActiveRecordingId(nil)
+        resetSharedBroadcastFlags()
+        broadcastStatus = "idle"
+        webViewStore.reset()
+        webViewURL = nil
+        CallAudioSessionManager.shared.deactivate()
+        UIApplication.shared.isIdleTimerDisabled = false
+        path = []
+        SessionDiagnostics.shared.record("stopped_session_returned_home_before_alert")
+
+        // Wait one run-loop turn so Home is committed and the old WebView
+        // hierarchy is gone before UIKit presents the native alert.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sessionExitAlert = alert
+            Task { await self.checkUploadEligibility() }
+        }
+    }
+
+    private func abandonUnstartedRecordingAttempt() {
+        guard isAwaitingBroadcastStart,
+              let pendingId = RecorderConstants.activeRecordingId,
+              RecordingManifestStore.load(recordingId: pendingId) == nil else { return }
+        RecordingStore.delete(recordingId: pendingId)
+        isAwaitingBroadcastStart = false
+    }
+
+    private func webInterruptionReason(_ raw: String?) -> String {
+        switch raw {
+        case "insufficientDisk": return "insufficientDisk"
+        case "rotatedWriterStartFailed", "encoderFailure": return "encoderFailure"
+        case "systemBroadcastFinished": return "userStopped"
+        case nil: return "unknown"
+        default: return "broadcastTerminated"
+        }
+    }
+
+    private func nowDeviceEpochMs() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    }
+
+    private func availableDiskBytes() -> Int64 {
+        guard let values = try? RecorderConstants.containerURL.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ) else { return Int64.max }
+        return values.volumeAvailableCapacityForImportantUsage ?? Int64.max
+    }
+
+    private func resetSharedBroadcastFlags() {
         let defaults = UserDefaults(suiteName: RecorderConstants.appGroup)
+        defaults?.set(false, forKey: RecorderConstants.stopRequestedKey)
         defaults?.set("idle", forKey: RecorderConstants.broadcastStatusKey)
         defaults?.removeObject(forKey: RecorderConstants.siteStopCompletedKey)
         defaults?.removeObject(forKey: RecorderConstants.siteStopRecordingIdKey)
         defaults?.synchronize()
+    }
 
+    func resetCompletedSession() {
+        resetSharedBroadcastFlags()
         broadcastStatus = "idle"
         uploader.reset()
-        RecordingManifest.clear()
-        ChunkMetadataStore.clear()
-        NativeUploadContextStore.clear()
+        RecordingStore.setActiveRecordingId(nil)
         webViewStore.reset()
         CallAudioSessionManager.shared.deactivate()
         UIApplication.shared.isIdleTimerDisabled = false
