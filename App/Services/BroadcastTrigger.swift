@@ -10,7 +10,7 @@ struct BroadcastTriggerButton: UIViewRepresentable {
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
         let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
         picker.preferredExtension = RecorderConstants.broadcastBundleId
-        picker.showsMicrophoneButton = true
+        picker.showsMicrophoneButton = false
         if let button = picker.subviews.compactMap({ $0 as? UIButton }).first {
             let config = UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)
             button.setImage(UIImage(systemName: "record.circle", withConfiguration: config), for: .normal)
@@ -30,7 +30,7 @@ struct BroadcastTriggerButton: UIViewRepresentable {
     static func trigger() {
         let picker = RPSystemBroadcastPickerView(frame: .zero)
         picker.preferredExtension = RecorderConstants.broadcastBundleId
-        picker.showsMicrophoneButton = true
+        picker.showsMicrophoneButton = false
         picker.subviews.compactMap { $0 as? UIButton }.first?
             .sendActions(for: .allTouchEvents)
     }

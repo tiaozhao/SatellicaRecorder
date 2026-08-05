@@ -1,28 +1,47 @@
 //  Theme.swift
-//  SatellicaRecorder — design system matching Satellica website.
+//  SatellicaRecorder — design tokens from Satellica globals.css.
 
 import SwiftUI
 
 enum STheme {
-    // Brand
-    static let primary = Color(hex: 0x4F46E5)       // Indigo 600
-    static let primaryLight = Color(hex: 0x6366F1)   // Indigo 500
-    static let primaryDark = Color(hex: 0x3730A3)    // Indigo 800
-
-    // Backgrounds
-    static let background = Color(hex: 0xF8FAFC)    // Slate 50
-    static let surface = Color.white
-    static let surfaceBorder = Color(hex: 0xE2E8F0)  // Slate 200
+    // Brand — from globals.css
+    static let primary = Color(hex: 0x6246FF)
+    static let primaryHover = Color(hex: 0x4E3BDA)
+    static let gradA = Color(hex: 0x4531B3)
+    static let gradB = Color(hex: 0x7D65FF)
 
     // Text
-    static let textPrimary = Color(hex: 0x0F172A)    // Slate 900
-    static let textSecondary = Color(hex: 0x64748B)  // Slate 500
-    static let textOnPrimary = Color.white
+    static let ink = Color(hex: 0x1B1530)
+    static let content = Color(hex: 0x2C2C2C)
+    static let textSubtle = Color(hex: 0x4A4A4A)
+    static let textSecondary = Color(hex: 0x7F7F7F)
+    static let heroSub = Color(hex: 0x5A5A6B)
+    static let meta = Color(hex: 0x7A7392)
+
+    // Surfaces
+    static let whiteW75 = Color(hex: 0xF9F9F9)
+    static let borderLight = Color(hex: 0xE2E2E2)
+    static let surface = Color.white
 
     // Status
-    static let success = Color(hex: 0x10B981)        // Emerald 500
-    static let destructive = Color(hex: 0xEF4444)    // Red 500
-    static let warning = Color(hex: 0xF59E0B)        // Amber 500
+    static let ok = Color(hex: 0x34C759)
+    static let destructive = Color(hex: 0xEF4444)
+    static let warning = Color(hex: 0xF59E0B)
+
+    // Shell gradient (white → #E7E9FF)
+    static let shellGradient = LinearGradient(
+        colors: [.white, Color(hex: 0xE7E9FF)],
+        startPoint: .top, endPoint: .bottom
+    )
+
+    // Kept for backward compat
+    static let textPrimary = ink
+    static let textOnPrimary = Color.white
+    static let background = Color(hex: 0xF8FAFC)
+    static let surfaceBorder = borderLight
+    static let success = ok
+    static let primaryLight = gradB
+    static let primaryDark = gradA
 }
 
 // MARK: - Hex color init
@@ -63,11 +82,11 @@ struct SButton: View {
             .frame(height: 50)
             .foregroundStyle(foregroundColor)
             .background(backgroundFill)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay {
                 if style == .outline {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(STheme.surfaceBorder, lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(STheme.borderLight, lineWidth: 1.5)
                 }
             }
         }

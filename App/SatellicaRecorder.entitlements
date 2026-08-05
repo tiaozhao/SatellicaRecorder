@@ -8,7 +8,7 @@
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.musiciansfriend.mobile.app.sfmc</string>
+		<string>group.io.satellica.recorder.shared</string>
 	</array>
 </dict>
 </plist>

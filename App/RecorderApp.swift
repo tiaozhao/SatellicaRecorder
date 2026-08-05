@@ -7,7 +7,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
-        ChunkUploader.shared.handleBackgroundSessionEvents(completionHandler: completionHandler)
+        ChunkUploader.shared.handleBackgroundSessionEvents(
+            identifier: identifier,
+            completionHandler: completionHandler
+        )
     }
 }
 
@@ -19,28 +22,28 @@ struct RecorderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack(path: $session.path) {
-                HomeView()
-                    .navigationDestination(for: AppRoute.self) { route in
-                        switch route {
-                        case .start: StartView()
-                        case .stop:  StopView()
-                        }
+        NavigationStack(path: $session.path) {
+            HomeView()
+                .navigationDestination(for: AppRoute.self) { route in
+                    switch route {
+                    case .start:   StartView()
+                    case .stop:    StopView()
+                    case .session: SessionWebViewPage()
                     }
-            }
-            .environmentObject(session)
-            .onOpenURL { url in
-                session.handleDeepLink(url)
-            }
-            .onChange(of: scenePhase) { _, newPhase in
-                if newPhase == .active {
-                    session.checkPendingState()
                 }
-            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: session.path)
+        .environmentObject(session)
+        .onOpenURL { url in
+            session.handleDeepLink(url)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            session.handleScenePhase(newPhase)
+        }
         }
     }
 }
 
 enum AppRoute: Hashable {
-    case start, stop
+    case start, stop, session
 }

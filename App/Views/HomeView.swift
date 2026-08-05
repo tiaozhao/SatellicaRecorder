@@ -1,147 +1,49 @@
 //  HomeView.swift
-//  SatellicaRecorder — default landing page with test controls.
+//  SatellicaRecorder — cold open: Satellica wordmark + one sentence.
+//  Matches ios-01-cold-open.html.
 
 import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject private var session: SessionManager
+    @State private var appear = false
 
     var body: some View {
         ZStack {
-            STheme.background.ignoresSafeArea()
+            STheme.shellGradient.ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Logo
-                    VStack(spacing: 16) {
-                        ZStack {
-                            Circle()
-                                .fill(STheme.primary.opacity(0.1))
-                                .frame(width: 96, height: 96)
-                            Image(systemName: "tv.and.mediabox")
-                                .font(.system(size: 40, weight: .light))
-                                .foregroundStyle(STheme.primary)
-                        }
-                        Text("Satellica Recorder")
-                            .font(.system(size: 26, weight: .bold))
-                            .foregroundStyle(STheme.textPrimary)
-                    }
-                    .padding(.top, 40)
+            // Soft brand bloom
+            RadialGradient(
+                colors: [STheme.primary.opacity(0.11), STheme.primary.opacity(0)],
+                center: .center,
+                startRadius: 0,
+                endRadius: 180
+            )
+            .frame(width: 360, height: 360)
+            .offset(y: -20)
 
-                    // Status card
-                    SCard {
-                        VStack(spacing: 12) {
-                            HStack {
-                                Circle()
-                                    .fill(statusColor)
-                                    .frame(width: 10, height: 10)
-                                Text(statusText)
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(STheme.textPrimary)
-                                Spacer()
-                            }
+            VStack(spacing: 30) {
+                // Full wordmark SVG from HTML (icon + "satellica" text)
+                Image("SatellicaWordmark")
+                    .resizable()
+                    .aspectRatio(711.0 / 155.27, contentMode: .fit)
+                    .frame(width: 178)
+                    .opacity(appear ? 1 : 0)
+                    .offset(y: appear ? 0 : 10)
+                    .animation(.easeOut(duration: 0.62), value: appear)
 
-                            if session.uploader.chunksTotal > 0 {
-                                VStack(spacing: 8) {
-                                    HStack {
-                                        Text("Chunks")
-                                            .font(.system(size: 13))
-                                            .foregroundStyle(STheme.textSecondary)
-                                        Spacer()
-                                        Text("\(session.uploader.chunksUploaded) / \(session.uploader.chunksTotal)")
-                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                            .foregroundStyle(STheme.primary)
-                                    }
-                                    ProgressView(value: uploadProgress)
-                                        .tint(STheme.primary)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 20)
-
-                    // Test controls
-                    SCard {
-                        VStack(spacing: 16) {
-                            HStack(spacing: 10) {
-                                Image(systemName: "hammer.fill")
-                                    .foregroundStyle(STheme.warning)
-                                    .font(.system(size: 18))
-                                Text("Test Controls")
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .foregroundStyle(STheme.textPrimary)
-                                Spacer()
-                            }
-
-                            // Start recording — broadcast picker
-                            VStack(spacing: 8) {
-                                Text("Start Recording")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(STheme.textSecondary)
-                                BroadcastTriggerButton()
-                                    .frame(width: 80, height: 80)
-                            }
-
-                            Divider()
-
-                            // Stop recording
-                            SButton(title: "Stop Recording", icon: "stop.circle", style: .secondary) {
-                                session.requestStop()
-                            }
-
-                            // Manual upload trigger
-                            SButton(title: "Upload Pending Chunks", icon: "arrow.up.circle", style: .outline) {
-                                session.uploader.uploadPendingChunks()
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 20)
-
-                    // Upload URL info
-                    SCard {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Upload Endpoint")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(STheme.textPrimary)
-                            Text(ChunkUploader.uploadURL?.absoluteString ?? "Not set")
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(STheme.textSecondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    .padding(.horizontal, 20)
-
-                    // Footer
-                    Text("Satellica Group Inc.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(STheme.textSecondary.opacity(0.6))
-                        .padding(.bottom, 24)
-                }
+                Text("To join a study, tap the invitation link you were sent.")
+                    .font(.system(size: 15.5, weight: .regular))
+                    .foregroundStyle(STheme.heroSub)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .frame(maxWidth: 268)
+                    .opacity(appear ? 1 : 0)
+                    .offset(y: appear ? 0 : 10)
+                    .animation(.easeOut(duration: 0.62).delay(0.1), value: appear)
             }
         }
         .navigationBarHidden(true)
-    }
-
-    private var statusColor: Color {
-        switch session.broadcastStatus {
-        case "recording": STheme.destructive
-        case "stopped": STheme.warning
-        case "completed": STheme.success
-        default: STheme.textSecondary
-        }
-    }
-
-    private var statusText: String {
-        switch session.broadcastStatus {
-        case "recording": "Recording"
-        case "stopped": "Stopped — uploading"
-        case "completed": "Upload complete"
-        default: "Idle"
-        }
-    }
-
-    private var uploadProgress: Double {
-        guard session.uploader.chunksTotal > 0 else { return 0 }
-        return Double(session.uploader.chunksUploaded) / Double(session.uploader.chunksTotal)
+        .onAppear { appear = true }
     }
 }

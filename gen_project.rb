@@ -6,9 +6,9 @@ root = File.expand_path(File.dirname(__FILE__))
 proj_path = File.join(root, 'SatellicaRecorder.xcodeproj')
 File.exist?(proj_path) && FileUtils.rm_rf(proj_path)
 
-APP_ID       = 'com.musiciansfriend.mobile.app'
-BROADCAST_ID = 'com.musiciansfriend.mobile.app.broadcast'
-TEAM         = ENV['DEVELOPMENT_TEAM'] || '44D3SM5LR3'
+APP_ID       = 'io.satellica.recorder'
+BROADCAST_ID = 'io.satellica.recorder.broadcast'
+TEAM         = ENV['DEVELOPMENT_TEAM'] || '8DY9BHVM5A'
 
 project = Xcodeproj::Project.new(proj_path)
 
@@ -18,8 +18,8 @@ app.build_configurations.each do |c|
   s = c.build_settings
   s['PRODUCT_BUNDLE_IDENTIFIER'] = APP_ID
   s['PRODUCT_NAME'] = 'SatellicaRecorder'
-  s['MARKETING_VERSION'] = '1.0'
-  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '4'
   s['SWIFT_VERSION'] = '5.0'
   s['IPHONEOS_DEPLOYMENT_TARGET'] = '17.0'
   s['TARGETED_DEVICE_FAMILY'] = '1'
@@ -27,9 +27,10 @@ app.build_configurations.each do |c|
   s['INFOPLIST_FILE'] = 'App/Info.plist'
   s['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
   s['INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents'] = 'YES'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'Satellica Recorder'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'Satellica'
   s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
   s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] = 'Satellica Recorder uses the microphone to capture your voice during screen recording sessions.'
+  s['INFOPLIST_KEY_NSCameraUsageDescription'] = 'Satellica Recorder uses the camera for video during your study session.'
   s['ENABLE_PREVIEWS'] = 'YES'
   s['CODE_SIGN_STYLE'] = 'Automatic'
   s['CODE_SIGN_ENTITLEMENTS'] = 'App/SatellicaRecorder.entitlements'
@@ -42,8 +43,8 @@ broadcast.build_configurations.each do |c|
   s = c.build_settings
   s['PRODUCT_BUNDLE_IDENTIFIER'] = BROADCAST_ID
   s['PRODUCT_NAME'] = 'BroadcastExtension'
-  s['MARKETING_VERSION'] = '1.0'
-  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '4'
   s['SWIFT_VERSION'] = '5.0'
   s['IPHONEOS_DEPLOYMENT_TARGET'] = '17.0'
   s['TARGETED_DEVICE_FAMILY'] = '1'
@@ -76,6 +77,13 @@ end
 # App sources
 app_group = project.main_group.new_group('App', 'App')
 add_sources(project, app, app_group, File.join(root, 'App'), '**/*.swift')
+
+# App assets
+assets_path = File.join(root, 'App', 'Assets.xcassets')
+if File.exist?(assets_path)
+  assets_ref = app_group.new_file(assets_path)
+  app.resources_build_phase.add_file_reference(assets_ref)
+end
 
 # Broadcast sources
 broadcast_group = project.main_group.new_group('BroadcastExtension', 'BroadcastExtension')
