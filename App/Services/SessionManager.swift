@@ -5,9 +5,16 @@
 import SwiftUI
 
 struct SessionExitAlert: Identifiable {
+    enum Action {
+        case exitInterview
+        case dismiss
+    }
+
     let id = UUID()
     let title: String
     let message: String
+    var buttonTitle: String = "Exit Interview"
+    var action: Action = .exitInterview
 }
 
 private struct UploadEligibilityResponse: Decodable {
@@ -21,6 +28,8 @@ final class SessionManager: ObservableObject {
     @Published var isRecording = false
     @Published var broadcastStatus: String = "idle"  // idle, recording, stopped, completed
     @Published var sessionExitAlert: SessionExitAlert?
+    @Published private(set) var navigationGeneration = 0
+    @Published var webViewLoadFailed = false
 
     /// The URL to load in the WebView (set by deep link handler).
     @Published var webViewURL: URL?
@@ -226,6 +235,13 @@ final class SessionManager: ObservableObject {
         }
         guard availableDiskBytes() >= RecorderConstants.minFreeDiskToStart else {
             SessionDiagnostics.shared.record("upload_context_rejected insufficient_start_disk=true")
+            sessionExitAlert = SessionExitAlert(
+                title: "Not enough storage",
+                message: "At least 700 MB of free storage is required to start recording. " +
+                    "Free up some space and try again.",
+                buttonTitle: "OK",
+                action: .dismiss
+            )
             return false
         }
         RecordingStore.prepare()
@@ -462,10 +478,23 @@ final class SessionManager: ObservableObject {
         let stoppedManifest = RecordingManifest.load()
         print("[SessionManager] manifest chunks: \(stoppedManifest?.chunks.count ?? 0), status: \(stoppedManifest?.status ?? "nil")")
 
-        guard let recordingId = RecorderConstants.activeRecordingId,
-              let context = NativeUploadContextStore.load(recordingId: recordingId) else {
-            RecordingStore.setActiveRecordingId(nil)
-            broadcastStatus = "idle"
+        guard let recordingId = RecorderConstants.activeRecordingId else {
+            SessionDiagnostics.shared.record("broadcast_finished_missing_recording_id")
+            presentStoppedSessionAlert(SessionExitAlert(
+                title: "Session interrupted",
+                message: "Screen recording stopped, so this session can’t continue."
+            ))
+            return
+        }
+        guard let context = NativeUploadContextStore.load(recordingId: recordingId) else {
+            SessionDiagnostics.shared.record(
+                "broadcast_finished_upload_context_unavailable recordingId=\(recordingId)"
+            )
+            presentStoppedSessionAlert(SessionExitAlert(
+                title: "Session interrupted",
+                message: "Screen recording stopped, so this session can’t continue. " +
+                    "Your recording has been saved safely on this device."
+            ))
             return
         }
 
@@ -486,7 +515,7 @@ final class SessionManager: ObservableObject {
             )
             let returnHome: () -> Void = { [weak self] in
                 guard let self else { return }
-                self.returnHomeAfterStoppedSession(presenting: alert)
+                self.presentStoppedSessionAlert(alert)
             }
             if context.stopRequestedBySite == true {
                 dispatchWebEvent("recordingStopped", completion: returnHome)
@@ -537,13 +566,22 @@ final class SessionManager: ObservableObject {
         RecordingStore.setActiveRecordingId(nil)
         resetSharedBroadcastFlags()
         broadcastStatus = "idle"
+        forceNavigationHome()
         webViewStore.reset()
         webViewURL = nil
         CallAudioSessionManager.shared.deactivate()
         UIApplication.shared.isIdleTimerDisabled = false
-        path = []
         processUploadQueueIfPossible()
         Task { await checkUploadEligibility() }
+    }
+
+    func handleAlertAction(_ action: SessionExitAlert.Action) {
+        switch action {
+        case .exitInterview:
+            leaveInterruptedSession()
+        case .dismiss:
+            sessionExitAlert = nil
+        }
     }
 
     /// Explicitly leaving the Site is the lifecycle boundary for its media
@@ -561,6 +599,10 @@ final class SessionManager: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = false
         path = []
         SessionDiagnostics.shared.record("web_session_exited_to_home")
+    }
+
+    func retryWebViewLoad() {
+        webViewStore.retryCurrentPage()
     }
 
     private func processUploadQueueIfPossible() {
@@ -623,6 +665,13 @@ final class SessionManager: ObservableObject {
 
         for start in stride(from: 0, to: ids.count, by: 100) {
             let requested = Array(ids[start..<min(start + 100, ids.count)])
+            let requestStartedAt = Date()
+            RecorderLog.write("app", "upload_eligibility_request", [
+                "batchStart": start,
+                "recordingCount": requested.count,
+                "method": "POST",
+                "endpointPath": "/api/recordings/upload-eligibility"
+            ])
             do {
                 let endpoint = RecorderConstants.siteBaseURL
                     .appendingPathComponent("api")
@@ -633,8 +682,17 @@ final class SessionManager: ObservableObject {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = try JSONEncoder().encode(["recordingIds": requested])
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    SessionDiagnostics.shared.record("upload_eligibility_http_error")
+                let httpResponse = response as? HTTPURLResponse
+                let status = httpResponse?.statusCode ?? 0
+                RecorderLog.write("app", "upload_eligibility_response", [
+                    "batchStart": start,
+                    "recordingCount": requested.count,
+                    "status": status,
+                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                    "responseBytes": data.count,
+                    "contentType": httpResponse?.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+                ])
+                guard status == 200 else {
                     shouldRetry = true
                     continue
                 }
@@ -645,16 +703,31 @@ final class SessionManager: ObservableObject {
                 guard uploadable.isSubset(of: requestedSet),
                       alreadyUploaded.isSubset(of: requestedSet),
                       uploadable.isDisjoint(with: alreadyUploaded) else {
-                    SessionDiagnostics.shared.record("upload_eligibility_invalid_response")
+                    RecorderLog.write("app", "upload_eligibility_invalid_response", [
+                        "requestedCount": requested.count,
+                        "uploadableCount": uploadable.count,
+                        "alreadyUploadedCount": alreadyUploaded.count
+                    ])
                     shouldRetry = true
                     continue
                 }
+                RecorderLog.write("app", "upload_eligibility_result", [
+                    "requestedCount": requested.count,
+                    "uploadableCount": uploadable.count,
+                    "alreadyUploadedCount": alreadyUploaded.count,
+                    "pendingCount": requestedSet.subtracting(uploadable).subtracting(alreadyUploaded).count
+                ])
                 for recordingId in alreadyUploaded {
                     uploader.cancelBackgroundTasks(recordingId: recordingId)
                     if RecorderConstants.activeRecordingId == recordingId {
                         uploader.reset()
                     }
-                    if !RecordingStore.delete(recordingId: recordingId) {
+                    let deleted = RecordingStore.delete(recordingId: recordingId)
+                    RecorderLog.write("app", "eligibility_already_uploaded_cleanup", [
+                        "recordingId": recordingId,
+                        "localRecordingDeleted": deleted
+                    ])
+                    if !deleted {
                         shouldRetry = true
                     }
                 }
@@ -692,12 +765,23 @@ final class SessionManager: ObservableObject {
                         continue
                     }
                     UploadQueueStore.enqueue(recordingId)
+                    RecorderLog.write("app", "eligibility_upload_authorized", [
+                        "recordingId": recordingId,
+                        "contextPersisted": true,
+                        "queued": UploadQueueStore.all().contains(recordingId)
+                    ])
                 }
             } catch {
                 shouldRetry = true
-                SessionDiagnostics.shared.record(
-                    "upload_eligibility_network_or_decode_error error=\(error.localizedDescription)"
-                )
+                let nsError = error as NSError
+                RecorderLog.write("app", "upload_eligibility_transport_or_decode_error", [
+                    "batchStart": start,
+                    "recordingCount": requested.count,
+                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                    "errorDomain": nsError.domain,
+                    "errorCode": nsError.code,
+                    "errorDescription": error.localizedDescription
+                ])
             }
         }
         processUploadQueueIfPossible()
@@ -733,24 +817,20 @@ final class SessionManager: ObservableObject {
         webViewStore.dispatchEvent(name, detail: detail, completion: completion)
     }
 
-    private func returnHomeAfterStoppedSession(presenting alert: SessionExitAlert) {
-        RecordingStore.setActiveRecordingId(nil)
-        resetSharedBroadcastFlags()
-        broadcastStatus = "idle"
-        webViewStore.reset()
-        webViewURL = nil
-        CallAudioSessionManager.shared.deactivate()
-        UIApplication.shared.isIdleTimerDisabled = false
-        path = []
-        SessionDiagnostics.shared.record("stopped_session_returned_home_before_alert")
+    private func presentStoppedSessionAlert(_ alert: SessionExitAlert) {
+        sessionExitAlert = alert
+        SessionDiagnostics.shared.record("stopped_session_alert_presented")
+        Task { await checkUploadEligibility() }
+    }
 
-        // Wait one run-loop turn so Home is committed and the old WebView
-        // hierarchy is gone before UIKit presents the native alert.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.sessionExitAlert = alert
-            Task { await self.checkUploadEligibility() }
+    private func forceNavigationHome() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            path.removeAll()
+            navigationGeneration &+= 1
         }
+        SessionDiagnostics.shared.record("navigation_forced_home")
     }
 
     private func abandonUnstartedRecordingAttempt() {

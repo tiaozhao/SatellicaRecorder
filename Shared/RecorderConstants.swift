@@ -115,7 +115,7 @@ enum RecorderConstants {
     static let videoBitRate: Int = 800_000            // 800 Kbps — ~800 KB per 8s chunk
     static let frameRate: Int = 30
     static let minFreeDisk: Int64 = 200_000_000       // emergency stop threshold
-    static let minFreeDiskToStart: Int64 = 500_000_000
+    static let minFreeDiskToStart: Int64 = 700_000_000
 
     static var isAppGroupContainerAvailable: Bool {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) != nil
@@ -129,13 +129,24 @@ enum RecorderConstants {
 enum RecorderLog {
     private static let maxBytes: Int64 = 5_000_000
     private static let processLock = NSLock()
+    private static let sensitiveKeyFragments = [
+        "token", "authorization", "credential", "secret", "password",
+        "signedurl", "signed_url", "uploadurl", "upload_url"
+    ]
+    private static let safeSensitiveMetadataKeys: Set<String> = [
+        "hasuploadtoken", "tokenchanged", "credentialtype", "credentiallogging"
+    ]
+    private static let inlineSecretPattern = try? NSRegularExpression(
+        pattern: #"(?i)\"?(upload[_-]?token|authorization|password|secret)\"?\s*[:=]\s*\"?(?:bearer\s+)?[^\s,;}\"]+\"?|\bbearer\s+[A-Za-z0-9._~+/=-]+"#
+    )
 
     static func write(_ source: String, _ event: String, _ fields: [String: CustomStringConvertible] = [:]) {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let details = fields.keys.sorted().map { key in
             let raw = fields[key]?.description ?? "nil"
-            let safe = raw.replacingOccurrences(of: "\n", with: "\\n")
+            let safe = sanitizedValue(raw, forKey: key)
+                .replacingOccurrences(of: "\n", with: "\\n")
                 .replacingOccurrences(of: "\r", with: "\\r")
             return "\(key)=\(safe)"
         }.joined(separator: " ")
@@ -165,6 +176,33 @@ enum RecorderLog {
             _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
         }
+    }
+
+    private static func sanitizedValue(_ raw: String, forKey key: String) -> String {
+        let normalizedKey = key.lowercased()
+        if !safeSensitiveMetadataKeys.contains(normalizedKey),
+           sensitiveKeyFragments.contains(where: normalizedKey.contains) {
+            return "[REDACTED]"
+        }
+
+        // Navigation URLs remain useful, but query values and fragments can
+        // contain recovery identifiers or other secrets.
+        var sanitized = raw
+        if let inlineSecretPattern {
+            let range = NSRange(sanitized.startIndex..<sanitized.endIndex, in: sanitized)
+            sanitized = inlineSecretPattern.stringByReplacingMatches(
+                in: sanitized,
+                range: range,
+                withTemplate: "[REDACTED]"
+            )
+        }
+        if normalizedKey == "url" || normalizedKey.hasSuffix("url") {
+            guard var components = URLComponents(string: sanitized) else { return sanitized }
+            components.query = nil
+            components.fragment = nil
+            return components.string ?? sanitized
+        }
+        return sanitized
     }
 
     private static func withLock(_ body: () -> Void) {

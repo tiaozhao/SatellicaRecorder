@@ -414,7 +414,9 @@ final class ChunkUploader: NSObject, ObservableObject {
         RecorderLog.write("uploader", "chunk_urls_request", [
             "recordingId": context.recordingId,
             "startIndex": startIndex,
-            "count": batchSize
+            "count": batchSize,
+            "method": "POST",
+            "endpointPath": context.chunkURLsEndpoint.path
         ])
 
         Task { @MainActor [weak self] in
@@ -440,7 +442,9 @@ final class ChunkUploader: NSObject, ObservableObject {
                     "recordingId": context.recordingId,
                     "startIndex": startIndex,
                     "status": status,
-                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                    "responseBytes": data.count,
+                    "contentType": self.contentType(response)
                 ])
 
                 if status == 200 {
@@ -450,21 +454,44 @@ final class ChunkUploader: NSObject, ObservableObject {
                         return
                     }
                     self.accept(batch: batch)
+                    self.logAcceptedSignedURLBatch(batch, requestedStartIndex: startIndex)
                     self.uploadPendingChunks()
                 } else if status == 401, self.isExpiredTokenError(data) {
+                    RecorderLog.write("uploader", "upload_token_rejected", [
+                        "recordingId": context.recordingId,
+                        "operation": "chunk_urls",
+                        "classification": "expired",
+                        "willRefresh": true
+                    ])
                     await self.refreshUploadToken(reason: "chunk_urls_token_expired")
                 } else if status == 401 {
-                    self.logAPIError(data: data, status: status, operation: "chunk_urls")
+                    self.logAPIError(
+                        data: data,
+                        status: status,
+                        operation: "chunk_urls",
+                        recordingId: context.recordingId
+                    )
                     self.failTerminal("chunk_urls_invalid_token")
                 } else if status == 500 || status == 502 || status == 0 {
                     self.scheduleGeneralRetry(reason: "chunk_urls_\(status)")
                 } else {
-                    self.logAPIError(data: data, status: status, operation: "chunk_urls")
+                    self.logAPIError(
+                        data: data,
+                        status: status,
+                        operation: "chunk_urls",
+                        recordingId: context.recordingId
+                    )
                     self.failTerminal("chunk_urls_terminal_\(status)")
                 }
             } catch {
                 guard generation == self.lifecycleGeneration else { return }
-                SessionDiagnostics.shared.record("chunk_urls_network_error error=\(error.localizedDescription)")
+                self.logTransportError(
+                    event: "chunk_urls_transport_or_decode_error",
+                    recordingId: context.recordingId,
+                    operation: "chunk_urls",
+                    error: error,
+                    elapsedMs: Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                )
                 self.scheduleGeneralRetry(reason: "chunk_urls_network")
             }
         }
@@ -539,13 +566,18 @@ final class ChunkUploader: NSObject, ObservableObject {
             "index": chunk.index,
             "bytes": fileSize(at: fileURL),
             "headerNames": signedURL.headers.keys.sorted().joined(separator: ","),
-            "backgroundTaskId": task.taskIdentifier
+            "backgroundTaskId": task.taskIdentifier,
+            "destinationHost": signedURL.uploadUrl.host ?? "unknown",
+            "urlExpiresInMs": max(0, (signedURL.expiresAtMs ?? 0) - nowEpochMs())
         ])
         task.resume()
     }
 
     private func handleTaskCompletion(
         taskDescription: String?,
+        taskIdentifier: Int,
+        bytesSent: Int64,
+        bytesExpectedToSend: Int64,
         error: Error?,
         response: URLResponse?
     ) {
@@ -557,13 +589,19 @@ final class ChunkUploader: NSObject, ObservableObject {
               manifest.chunks.contains(where: { $0.index == identity.chunkIndex }) else { return }
 
         if let error {
+            let nsError = error as NSError
             RecorderLog.write("uploader", "chunk_put_finished", [
                 "recordingId": identity.recordingId,
                 "index": identity.chunkIndex,
                 "status": 0,
-                "transportError": error.localizedDescription
+                "result": nsError.code == NSURLErrorCancelled ? "cancelled" : "transport_error",
+                "errorDomain": nsError.domain,
+                "errorCode": nsError.code,
+                "errorDescription": error.localizedDescription,
+                "backgroundTaskId": taskIdentifier,
+                "bytesSent": bytesSent,
+                "bytesExpectedToSend": bytesExpectedToSend
             ])
-            SessionDiagnostics.shared.record("chunk_upload_network_error index=\(identity.chunkIndex) error=\(error.localizedDescription)")
             _ = updateChunk(identity.chunkIndex, in: &manifest, status: .failed)
             scheduleChunkRetry(identity.chunkIndex)
             return
@@ -573,7 +611,12 @@ final class ChunkUploader: NSObject, ObservableObject {
         RecorderLog.write("uploader", "chunk_put_finished", [
             "recordingId": identity.recordingId,
             "index": identity.chunkIndex,
-            "status": status
+            "status": status,
+            "result": status == 200 ? "uploaded" : "http_error",
+            "backgroundTaskId": taskIdentifier,
+            "bytesSent": bytesSent,
+            "bytesExpectedToSend": bytesExpectedToSend,
+            "contentType": contentType(response)
         ])
         if status == 200 {
             guard updateChunk(identity.chunkIndex, in: &manifest, status: .uploaded) else {
@@ -646,10 +689,17 @@ final class ChunkUploader: NSObject, ObservableObject {
             RecorderLog.write("uploader", "token_refresh_response", [
                 "recordingId": context.recordingId,
                 "status": status,
-                "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                "responseBytes": data.count,
+                "contentType": contentType(response)
             ])
             guard status == 200 else {
-                logAPIError(data: data, status: status, operation: "recording_start_refresh")
+                logAPIError(
+                    data: data,
+                    status: status,
+                    operation: "recording_start_refresh",
+                    recordingId: context.recordingId
+                )
                 if status == 500 || status == 502 || status == 0 {
                     scheduleGeneralRetry(reason: "token_refresh_\(status)")
                 } else {
@@ -663,6 +713,7 @@ final class ChunkUploader: NSObject, ObservableObject {
                 failTerminal("token_refresh_recording_mismatch")
                 return
             }
+            let tokenChanged = refreshed.uploadToken != context.uploadToken
             if abs(refreshed.chunkSeconds - context.chunkSeconds) > 0.001 {
                 // Chunk duration is immutable once ReplayKit has started.
                 SessionDiagnostics.shared.record(
@@ -679,13 +730,29 @@ final class ChunkUploader: NSObject, ObservableObject {
                 return
             }
             clearSignedURLCache()
-            SessionDiagnostics.shared.record("upload_token_refreshed reason=\(reason)")
+            RecorderLog.write("uploader", "token_refresh_succeeded", [
+                "recordingId": context.recordingId,
+                "reason": reason,
+                "tokenChanged": tokenChanged,
+                "contextPersisted": true,
+                "chunkSeconds": context.chunkSeconds,
+                "chunkUrlBatch": context.chunkURLBatch,
+                "maxChunks": context.maxChunks ?? -1,
+                "maxChunkBytes": context.maxChunkBytes,
+                "serverClockOffsetMs": context.serverEpochMs - nowEpochMs()
+            ])
             // Let the caller's defer blocks release its batch/completion guard
             // before the refreshed scan begins.
             DispatchQueue.main.async { [weak self] in self?.uploadPendingChunks() }
         } catch {
             guard generation == lifecycleGeneration else { return }
-            SessionDiagnostics.shared.record("token_refresh_network_error error=\(error.localizedDescription)")
+            logTransportError(
+                event: "token_refresh_transport_or_decode_error",
+                recordingId: context.recordingId,
+                operation: "recording_start_refresh",
+                error: error,
+                elapsedMs: Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+            )
             scheduleGeneralRetry(reason: "token_refresh_network")
         }
     }
@@ -771,25 +838,49 @@ final class ChunkUploader: NSObject, ObservableObject {
                 RecorderLog.write("uploader", "complete_http_response", [
                     "recordingId": context.recordingId,
                     "status": status,
-                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                    "responseBytes": data.count,
+                    "contentType": self.contentType(response)
                 ])
                 if status == 200 {
                     let result = try JSONDecoder().decode(CompleteResponse.self, from: data)
                     self.handleCompleteResponse(result)
                 } else if status == 401, self.isExpiredTokenError(data) {
+                    RecorderLog.write("uploader", "upload_token_rejected", [
+                        "recordingId": context.recordingId,
+                        "operation": "complete",
+                        "classification": "expired",
+                        "willRefresh": true
+                    ])
                     await self.refreshUploadToken(reason: "complete_token_expired")
                 } else if status == 401 {
-                    self.logAPIError(data: data, status: status, operation: "complete")
+                    self.logAPIError(
+                        data: data,
+                        status: status,
+                        operation: "complete",
+                        recordingId: context.recordingId
+                    )
                     self.failTerminal("complete_invalid_token")
                 } else if status == 500 || status == 502 || status == 0 {
                     self.scheduleGeneralRetry(reason: "complete_\(status)")
                 } else {
-                    self.logAPIError(data: data, status: status, operation: "complete")
+                    self.logAPIError(
+                        data: data,
+                        status: status,
+                        operation: "complete",
+                        recordingId: context.recordingId
+                    )
                     self.failTerminal("complete_terminal_\(status)")
                 }
             } catch {
                 guard generation == self.lifecycleGeneration else { return }
-                SessionDiagnostics.shared.record("complete_network_or_decode_error error=\(error.localizedDescription)")
+                self.logTransportError(
+                    event: "complete_transport_or_decode_error",
+                    recordingId: context.recordingId,
+                    operation: "complete",
+                    error: error,
+                    elapsedMs: Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                )
                 self.scheduleGeneralRetry(reason: "complete_network")
             }
         }
@@ -1273,6 +1364,12 @@ final class ChunkUploader: NSObject, ObservableObject {
         let attempt = min((retryAttempts[index] ?? 0) + 1, 8)
         retryAttempts[index] = attempt
         let delay = min(pow(2.0, Double(attempt)), 60.0)
+        RecorderLog.write("uploader", "chunk_retry_scheduled", [
+            "recordingId": NativeUploadContextStore.load()?.recordingId ?? "unknown",
+            "index": index,
+            "attempt": attempt,
+            "delayMs": Int(delay * 1_000)
+        ])
         activity = .retrying
         isUploading = true
         let item = DispatchWorkItem { [weak self] in
@@ -1285,7 +1382,12 @@ final class ChunkUploader: NSObject, ObservableObject {
     }
 
     private func scheduleGeneralRetry(reason: String) {
-        SessionDiagnostics.shared.record("upload_retry_scheduled reason=\(reason)")
+        RecorderLog.write("uploader", "upload_retry_scheduled", [
+            "recordingId": NativeUploadContextStore.load()?.recordingId ?? "unknown",
+            "reason": reason,
+            "delayMs": 10_000,
+            "coalesced": generalRetryWorkItem != nil
+        ])
         activity = .retrying
         isUploading = true
         guard generalRetryWorkItem == nil else { return }
@@ -1330,15 +1432,80 @@ final class ChunkUploader: NSObject, ObservableObject {
         completionBackgroundTask = .invalid
     }
 
-    private func logAPIError(data: Data, status: Int, operation: String) {
-        let message = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data))?.error?.message ?? "unknown"
-        SessionDiagnostics.shared.record("api_error operation=\(operation) status=\(status) message=\(message)")
+    private func logAPIError(
+        data: Data,
+        status: Int,
+        operation: String,
+        recordingId: String
+    ) {
+        let apiError = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data))?.error
+        RecorderLog.write("uploader", "api_error", [
+            "operation": operation,
+            "recordingId": recordingId,
+            "status": status,
+            "apiCode": apiError?.code ?? -1,
+            "classification": apiErrorClassification(apiError?.message),
+            "responseBytes": data.count
+        ])
     }
 
     private func isExpiredTokenError(_ data: Data) -> Bool {
         let message = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data))?
             .error?.message?.lowercased() ?? ""
         return message.contains("token") && message.contains("expired")
+    }
+
+    private func apiErrorClassification(_ message: String?) -> String {
+        let normalized = message?.lowercased() ?? ""
+        if normalized.contains("token") && normalized.contains("expired") { return "token_expired" }
+        if normalized.contains("token") { return "token_invalid" }
+        if normalized.contains("missing") { return "missing_data" }
+        return message == nil ? "no_error_body" : "server_rejected"
+    }
+
+    private func logAcceptedSignedURLBatch(
+        _ batch: SignedURLBatchResponse,
+        requestedStartIndex: Int
+    ) {
+        let indexes = batch.urls.map(\.index).sorted()
+        let contiguous = indexes.isEmpty || indexes.enumerated().allSatisfy { offset, index in
+            index == (indexes.first ?? 0) + offset
+        }
+        RecorderLog.write("uploader", "chunk_urls_accepted", [
+            "recordingId": batch.recordingId,
+            "requestedStartIndex": requestedStartIndex,
+            "urlCount": indexes.count,
+            "firstIndex": indexes.first ?? -1,
+            "lastIndex": indexes.last ?? -1,
+            "expiresInMs": max(0, batch.expiresAtMs - nowEpochMs()),
+            "contiguous": contiguous
+        ])
+    }
+
+    private func logTransportError(
+        event: String,
+        recordingId: String,
+        operation: String,
+        error: Error,
+        elapsedMs: Int
+    ) {
+        let nsError = error as NSError
+        RecorderLog.write("uploader", event, [
+            "recordingId": recordingId,
+            "operation": operation,
+            "elapsedMs": elapsedMs,
+            "errorDomain": nsError.domain,
+            "errorCode": nsError.code,
+            "errorDescription": error.localizedDescription
+        ])
+    }
+
+    private func contentType(_ response: URLResponse?) -> String {
+        (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+    }
+
+    private func nowEpochMs() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1_000).rounded())
     }
 
     private func failTerminal(_ reason: String) {
@@ -1359,9 +1526,15 @@ extension ChunkUploader: URLSessionDelegate, URLSessionTaskDelegate {
     ) {
         let taskDescription = task.taskDescription
         let response = task.response
+        let taskIdentifier = task.taskIdentifier
+        let bytesSent = task.countOfBytesSent
+        let bytesExpectedToSend = task.countOfBytesExpectedToSend
         Task { @MainActor in
             self.handleTaskCompletion(
                 taskDescription: taskDescription,
+                taskIdentifier: taskIdentifier,
+                bytesSent: bytesSent,
+                bytesExpectedToSend: bytesExpectedToSend,
                 error: error,
                 response: response
             )

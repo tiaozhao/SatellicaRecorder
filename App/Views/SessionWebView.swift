@@ -72,27 +72,73 @@ struct SessionWebViewPage: View {
     @EnvironmentObject private var session: SessionManager
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack {
             SessionWebView()
                 .ignoresSafeArea()
 
-            // Never allow navigation to detach the live call while recording.
-            if !session.isRecording {
-                Button {
-                    session.returnHomeFromWebSession()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(.black.opacity(0.4))
-                        .clipShape(Circle())
+            if session.webViewLoadFailed {
+                WebViewFailureView {
+                    session.retryWebViewLoad()
                 }
-                .padding(.top, 10)
-                .padding(.leading, 12)
+                .transition(.opacity)
             }
         }
         .navigationBarHidden(true)
+    }
+}
+
+private struct WebViewFailureView: View {
+    let retry: () -> Void
+
+    var body: some View {
+        ZStack {
+            STheme.shellGradient.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 40, weight: .medium))
+                    .foregroundStyle(STheme.primary)
+                    .frame(width: 80, height: 80)
+                    .background(STheme.primary.opacity(0.1))
+                    .clipShape(Circle())
+
+                Text("Unable to load the interview")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(STheme.ink)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 28)
+
+                Text("Check your internet connection and try again.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(STheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .padding(.top, 12)
+
+                SButton(title: "Try Again", icon: "arrow.clockwise", action: retry)
+                    .padding(.top, 32)
+            }
+            .frame(maxWidth: 360)
+            .padding(.horizontal, 28)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+@MainActor
+private final class WebEventCompletion {
+    private var completion: (() -> Void)?
+
+    init(_ completion: (() -> Void)?) {
+        self.completion = completion
+    }
+
+    @discardableResult
+    func finish() -> Bool {
+        guard let completion else { return false }
+        self.completion = nil
+        completion()
+        return true
     }
 }
 
@@ -135,8 +181,12 @@ final class PersistentWebViewStore: ObservableObject {
         webView.navigationDelegate = handler
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // UIRefreshControl otherwise cannot be pulled when the website is
+        // shorter than the visible WebView viewport.
+        webView.scrollView.alwaysBounceVertical = true
 
         let refreshControl = UIRefreshControl()
+        refreshControl.tintColor = .systemGray
         refreshControl.addTarget(
             handler,
             action: #selector(SessionWebViewCoordinator.handleRefresh(_:)),
@@ -161,7 +211,7 @@ final class PersistentWebViewStore: ObservableObject {
     func update(session: SessionManager) {
         guard let webView else { return }
         coordinator?.session = session
-        webView.scrollView.refreshControl?.isEnabled = !session.isRecording
+        webView.scrollView.refreshControl?.isEnabled = webView.microphoneCaptureState == .none
         webView.allowsBackForwardNavigationGestures = !session.isRecording
 
         let desiredURL = session.webViewURL ?? URL(string: "\(RecorderConstants.siteURL)/session/room")!
@@ -178,6 +228,23 @@ final class PersistentWebViewStore: ObservableObject {
         loadedEntryURL = desiredURL
         SessionDiagnostics.shared.record("webview_load_entry url=\(diagnosticURL(desiredURL))")
         webView.load(URLRequest(url: desiredURL))
+    }
+
+    func retryCurrentPage() {
+        guard let webView else { return }
+        let retryURL = WebSecurityPolicy.isTrusted(webView.url) ? webView.url : loadedEntryURL
+        guard let retryURL, WebSecurityPolicy.isTrusted(retryURL) else {
+            coordinator?.session?.webViewLoadFailed = true
+            SessionDiagnostics.shared.record("webview_retry_blocked missing_trusted_url=true")
+            return
+        }
+        SessionDiagnostics.shared.record("webview_retry url=\(diagnosticURL(retryURL))")
+        webView.stopLoading()
+        webView.load(URLRequest(
+            url: retryURL,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 30
+        ))
     }
 
     func recordScenePhase(_ phase: ScenePhase) {
@@ -227,6 +294,7 @@ final class PersistentWebViewStore: ObservableObject {
         let camera = webView.cameraCaptureState
         let microphone = webView.microphoneCaptureState
         let changed = camera != lastCameraState || microphone != lastMicrophoneState
+        webView.scrollView.refreshControl?.isEnabled = microphone == .none
 
         if force || changed {
             SessionDiagnostics.shared.record(
@@ -260,8 +328,16 @@ final class PersistentWebViewStore: ObservableObject {
             detailExpression = ""
         }
         let script = "window.dispatchEvent(new CustomEvent('\(name)'\(detailExpression)))"
+        let completionGate = WebEventCompletion(completion)
+        if completion != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if completionGate.finish() {
+                    SessionDiagnostics.shared.record("web_event_dispatch_timeout name=\(name)")
+                }
+            }
+        }
         Task { @MainActor in
-            defer { completion?() }
+            defer { completionGate.finish() }
             do {
                 _ = try await webView.evaluateJavaScript(script)
                 SessionDiagnostics.shared.record("web_event_dispatched name=\(name)")
@@ -286,6 +362,7 @@ final class PersistentWebViewStore: ObservableObject {
             // the navigation transition back to Home.
             webView.loadHTMLString("", baseURL: nil)
         }
+        coordinator?.session?.webViewLoadFailed = false
         coordinator = nil
         webView = nil
         loadedEntryURL = nil
@@ -430,12 +507,21 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
     }
 
     @objc func handleRefresh(_ sender: UIRefreshControl) {
-        guard session?.isRecording != true else {
+        guard let webView else {
             sender.endRefreshing()
-            SessionDiagnostics.shared.record("webview_refresh_blocked recording=true")
             return
         }
-        webView?.reload()
+        guard webView.microphoneCaptureState == .none else {
+            sender.endRefreshing()
+            SessionDiagnostics.shared.record(
+                "webview_refresh_blocked microphoneState=\(webView.microphoneCaptureState.rawValue)"
+            )
+            return
+        }
+        SessionDiagnostics.shared.record(
+            "webview_pull_to_refresh recording=\(session?.isRecording == true)"
+        )
+        webView.reloadFromOrigin()
     }
 
     func webView(
@@ -481,22 +567,16 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
         }
 
         // `target="_blank"` and `window.open()` have no target frame. Keep the
-        // call/session in the one persistent WKWebView and hand the new tab to
-        // the system browser only when recording is not active.
+        // call/session in the one persistent WKWebView and always hand a valid
+        // HTTP(S) new-tab destination to the system browser. ReplayKit and the
+        // retained WebView continue running when the browser comes forward.
         if navigationAction.targetFrame == nil {
-            if session?.isRecording == true {
-                SessionDiagnostics.shared.record(
-                    "external_navigation_blocked recording=true url=\(diagnosticURL(destination))"
-                )
-                decisionHandler(.cancel)
-            } else if openInSystemBrowser(destination) {
-                decisionHandler(.cancel)
-            } else {
+            if !openInSystemBrowser(destination) {
                 SessionDiagnostics.shared.record(
                     "external_navigation_blocked url=\(diagnosticURL(destination))"
                 )
-                decisionHandler(.cancel)
             }
+            decisionHandler(.cancel)
             return
         }
 
@@ -523,6 +603,27 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
 
     func webView(
         _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        if navigationResponse.isForMainFrame,
+           let response = navigationResponse.response as? HTTPURLResponse,
+           (500...599).contains(response.statusCode) {
+            SessionDiagnostics.shared.record(
+                "webview_server_error status=\(response.statusCode) " +
+                "url=\(diagnosticURL(response.url))"
+            )
+            Task { @MainActor [weak self] in
+                self?.session?.webViewLoadFailed = true
+            }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(
+        _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
@@ -530,13 +631,11 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
         // Defensive fallback for WebKit versions that reach the UI delegate
         // without first calling the navigation-policy delegate.
         if !handleAppDeepLink(navigationAction.request.url) {
-            if session?.isRecording == true {
+            if !openInSystemBrowser(navigationAction.request.url) {
                 SessionDiagnostics.shared.record(
-                    "external_navigation_blocked_fallback recording=true " +
+                    "external_navigation_blocked_fallback " +
                     "url=\(diagnosticURL(navigationAction.request.url))"
                 )
-            } else {
-                _ = openInSystemBrowser(navigationAction.request.url)
             }
         }
         return nil
@@ -548,12 +647,17 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webView.scrollView.refreshControl?.endRefreshing()
+        Task { @MainActor [weak self] in
+            self?.session?.webViewLoadFailed = false
+        }
         SessionDiagnostics.shared.record("webview_loaded url=\(diagnosticURL(webView.url))")
         store?.sampleMediaState(reason: "navigation_finished", force: true)
         CallAudioSessionManager.shared.logCurrentState(event: "audio_after_webview_load")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        webView.scrollView.refreshControl?.endRefreshing()
+        reportLoadFailureIfNeeded(error)
         SessionDiagnostics.shared.record("webview_failed error=\(error.localizedDescription)")
     }
 
@@ -562,6 +666,8 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
+        webView.scrollView.refreshControl?.endRefreshing()
+        reportLoadFailureIfNeeded(error)
         SessionDiagnostics.shared.record(
             "webview_provisional_failed error=\(error.localizedDescription) " +
             "url=\(diagnosticURL(webView.url))"
@@ -570,6 +676,16 @@ final class SessionWebViewCoordinator: NSObject, WKScriptMessageHandler, WKUIDel
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         store?.handleWebContentTermination(webView)
+    }
+
+    private func reportLoadFailureIfNeeded(_ error: Error) {
+        let nsError = error as NSError
+        guard !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) else {
+            return
+        }
+        Task { @MainActor [weak self] in
+            self?.session?.webViewLoadFailed = true
+        }
     }
 
     private func handleAppDeepLink(_ url: URL?) -> Bool {

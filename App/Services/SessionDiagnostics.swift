@@ -28,7 +28,9 @@ final class SessionDiagnostics {
             "appVersion": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
             "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
             "osVersion": UIDevice.current.systemVersion,
-            "deviceModel": UIDevice.current.model
+            "deviceModel": UIDevice.current.model,
+            "logSchema": 2,
+            "credentialLogging": "disabled"
         ])
 
         record(

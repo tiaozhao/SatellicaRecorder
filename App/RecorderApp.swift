@@ -103,6 +103,7 @@ struct RecorderApp: App {
                             }
                         }
                 }
+                .id(session.navigationGeneration)
             } else {
                 InitialRouteView()
             }
@@ -147,8 +148,8 @@ struct RecorderApp: App {
             Alert(
                 title: Text(alert.title),
                 message: Text(alert.message),
-                dismissButton: .default(Text("Exit Interview")) {
-                    session.leaveInterruptedSession()
+                dismissButton: .default(Text(alert.buttonTitle)) {
+                    session.handleAlertAction(alert.action)
                 }
             )
         }
