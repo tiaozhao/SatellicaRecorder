@@ -5,6 +5,7 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:frontend-env-dev-satellica.vercel.app</string>
+		<string>applinks:app.satellica.io</string>
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
